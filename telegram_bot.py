@@ -134,7 +134,7 @@ def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return update.message.reply_text("Ошибка при анализе. Попробуй ещё раз.")
 
 
-def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
 
 
