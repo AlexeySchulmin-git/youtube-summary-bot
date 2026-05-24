@@ -4,18 +4,19 @@ import logging
 import threading
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import google.generativeai as genai
+from openai import OpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://ai.externcashpn.cv/v1")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
 SUPADATA_API_KEY = os.environ.get("SUPADATA_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash")
+client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
 
 def get_video_id(url: str) -> str:
@@ -26,12 +27,9 @@ def get_video_id(url: str) -> str:
 
 
 def get_transcript(video_id: str) -> str | None:
-    url = f"https://api.supadata.ai/v1/youtube/transcript"
+    url = "https://api.supadata.ai/v1/youtube/transcript"
     headers = {"x-api-key": SUPADATA_API_KEY}
-    params = {
-        "videoId": video_id,
-        "text": True  # вернуть чистый текст без таймкодов
-    }
+    params = {"videoId": video_id, "text": True}
 
     response = requests.get(url, headers=headers, params=params, timeout=30)
 
@@ -40,7 +38,6 @@ def get_transcript(video_id: str) -> str | None:
         return None
 
     data = response.json()
-    # Supadata возвращает либо строку либо список сегментов
     if isinstance(data, str):
         return data
     if isinstance(data, dict):
@@ -66,8 +63,12 @@ def summarize(text: str) -> str:
 Текст субтитров:
 {text[:12000]}
 """
-    response = model.generate_content(prompt)
-    return response.text
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1000,
+    )
+    return response.choices[0].message.content
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
