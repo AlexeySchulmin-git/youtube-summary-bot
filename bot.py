@@ -70,7 +70,7 @@ def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
         <title>Мои конспекты</title>
         <style>
             :root {{ --bg:#f3f4f6; --panel:#ffffff; --text:#1f2937; --muted:#6b7280; --line:#e5e7eb; }}
-            body {{ margin:0; font-family:Inter,system-ui,Segoe UI,Arial,sans-serif; background:var(--bg); color:var(--text);} }
+            body {{ margin:0; font-family:Inter,system-ui,Segoe UI,Arial,sans-serif; background:var(--bg); color:var(--text); }}
             .wrap {{ max-width:1200px; margin:24px auto; background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden; display:grid; grid-template-columns:260px 1fr; min-height:80vh; }}
             .sidebar {{ border-right:1px solid var(--line); padding:20px; background:#fafafa; }}
             .logo {{ font-weight:700; margin-bottom:18px; }}
@@ -166,7 +166,7 @@ def get_transcript(video_id: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summary: str, chunk_count: int, transcript_source: str) -> str | None:
+def _get_or_create_user_id(update: Update) -> str | None:
     if not supabase or not update.effective_user:
         return None
 
@@ -189,8 +189,53 @@ def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summ
         )
         if not profile_resp.data:
             return None
+        return profile_resp.data[0]["id"]
+    except Exception as e:
+        logging.warning(f"Supabase profile failed: {e}")
+        return None
 
-        user_id = profile_resp.data[0]["id"]
+
+def get_saved_summary_for_user(update: Update, video_id: str) -> dict | None:
+    if not supabase or not update.effective_user:
+        return None
+
+    user_id = _get_or_create_user_id(update)
+    if not user_id:
+        return None
+
+    try:
+        summary_resp = (
+            supabase.table("summaries")
+            .select("id, summary_markdown")
+            .eq("user_id", user_id)
+            .eq("video_id", video_id)
+            .limit(1)
+            .execute()
+        )
+        if summary_resp.data:
+            return summary_resp.data[0]
+    except Exception as e:
+        logging.warning(f"Supabase fetch existing summary failed: {e}")
+    return None
+
+
+def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summary: str, chunk_count: int, transcript_source: str) -> str | None:
+    user_id = _get_or_create_user_id(update)
+    if not supabase or not user_id:
+        return None
+
+    try:
+        existing_resp = (
+            supabase.table("summaries")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("video_id", video_id)
+            .limit(1)
+            .execute()
+        )
+        if existing_resp.data:
+            return existing_resp.data[0].get("id")
+
         summary_payload = {
             "user_id": user_id,
             "video_id": video_id,
@@ -368,6 +413,9 @@ def analyze_chunk(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
 2) Ключевые идеи (3-6 пунктов)
 3) Важные оговорки/ограничения (если есть)
 
+Сосредоточься на том, что важно именно в контексте этого видео.
+Не добавляй оценок типа 'стоит ли смотреть'.
+
 Текст чанка:
 {chunk_text}
 """
@@ -389,16 +437,17 @@ def synthesize_analyses(analyses: list[str]) -> str:
     joined = "\n\n---\n\n".join(analyses)
     system_prompt = (
         "Ты синтезируешь несколько частичных аналитик в единый конспект. "
-        "Убирай повторы, объединяй близкие идеи, сохраняй только суть."
+        "Сосредоточься на самых важных вещах из видео, избегай оценок формата 'стоит ли смотреть'. "
+        "Выделяй практические выводы, ключевые мысли и важные детали, которые стоит запомнить."
     )
     user_prompt = f"""
 Собери итоговый конспект строго в формате:
 
 🎯 **Краткое резюме** (ровно 3 предложения)
 
-📌 **Ключевые идеи** (5-8 пунктов)
+📌 **Важные вещи** (5-8 пунктов)
 
-✅ **Вывод** (1-2 предложения: кому и зачем это полезно)
+✅ **Кому это важно** (1-2 предложения)
 
 Материалы для синтеза:
 {joined}
@@ -430,7 +479,7 @@ def summarize_with_multi_agent_pipeline(text: str) -> tuple[str, int]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Отправь мне ссылку на YouTube видео — я сделаю краткий конспект и скажу, стоит ли его смотреть.",
+        "👋 Привет! Отправь мне ссылку на YouTube видео — я сделаю краткий конспект и выделю важные вещи из видео.",
         reply_markup=MAIN_MENU,
     )
 
@@ -535,6 +584,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_id = get_video_id(url)
     except ValueError:
         await update.message.reply_text("Не могу найти ID видео. Проверь ссылку.")
+        return
+
+    saved = get_saved_summary_for_user(update, video_id)
+    if saved:
+        await update.message.reply_text("📌 Этот ролик уже сохранён в твоих конспектах. Вот существующий конспект:", parse_mode="Markdown")
+        await update.message.reply_text(saved.get("summary_markdown", ""), parse_mode="Markdown")
         return
 
     text, transcript_source = get_transcript(video_id)
