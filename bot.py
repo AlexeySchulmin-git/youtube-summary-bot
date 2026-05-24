@@ -1,9 +1,7 @@
 import os
 import re
 import logging
-import threading
 import requests
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -15,6 +13,8 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://ai.externcashpn.cv/v1")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
 SUPADATA_API_KEY = os.environ.get("SUPADATA_API_KEY")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://your-app.onrender.com
+PORT = int(os.environ.get("PORT", 8080))
 
 client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
@@ -30,13 +30,10 @@ def get_transcript(video_id: str) -> str | None:
     url = "https://api.supadata.ai/v1/youtube/transcript"
     headers = {"x-api-key": SUPADATA_API_KEY}
     params = {"videoId": video_id, "text": True}
-
     response = requests.get(url, headers=headers, params=params, timeout=30)
-
     if response.status_code != 200:
         logging.error(f"Supadata error: {response.status_code} {response.text}")
         return None
-
     data = response.json()
     if isinstance(data, str):
         return data
@@ -109,26 +106,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
-    logging.error(f"Необработанная ошибка: {context.error}")
-
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, *args):
-        pass
-
-def run_http():
-    port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    logging.error(f"Ошибка: {context.error}")
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_http, daemon=True).start()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
-    app.run_polling(drop_pending_updates=True)
+
+    if WEBHOOK_URL:
+        # Webhook режим — стабильнее на облаке
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=f"{WEBHOOK_URL}/webhook",
+        )
+    else:
+        # Polling — для локального запуска
+        app.run_polling(drop_pending_updates=True)
