@@ -2,6 +2,8 @@ import os
 import re
 import subprocess
 import logging
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -23,10 +25,7 @@ def get_video_id(url: str) -> str:
 
 
 def download_subtitles(video_id: str) -> str | None:
-    """Скачивает субтитры через yt-dlp, возвращает текст или None."""
     tmp = f"/tmp/sub_{video_id}"
-
-    # Пробуем автосубтитры на любом языке
     cmd = [
         "yt-dlp",
         "--skip-download",
@@ -37,10 +36,8 @@ def download_subtitles(video_id: str) -> str | None:
         "--output", tmp,
         f"https://www.youtube.com/watch?v={video_id}"
     ]
-
     subprocess.run(cmd, capture_output=True, text=True)
 
-    # Найти скачанный .vtt файл
     for f in os.listdir("/tmp"):
         if f.startswith(f"sub_{video_id}") and f.endswith(".vtt"):
             path = f"/tmp/{f}"
@@ -48,12 +45,10 @@ def download_subtitles(video_id: str) -> str | None:
                 raw = file.read()
             os.remove(path)
             return parse_vtt(raw)
-
     return None
 
 
 def parse_vtt(raw: str) -> str:
-    """Парсит VTT субтитры в чистый текст без дублей."""
     lines = raw.splitlines()
     text_lines = []
     prev = ""
@@ -69,7 +64,7 @@ def parse_vtt(raw: str) -> str:
     return " ".join(text_lines)
 
 
-def summarize(text: str, lang: str = "ru") -> str:
+def summarize(text: str) -> str:
     prompt = f"""Ты помощник для анализа видео. Тебе дан текст субтитров видео.
 
 Сделай краткий конспект на русском языке в таком формате:
@@ -124,7 +119,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ошибка при анализе. Попробуй ещё раз.")
 
 
+# Фиктивный HTTP сервер для Render
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, *args):
+        pass
+
+def run_http():
+    port = int(os.environ.get("PORT", 8080))
+    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+
 if __name__ == "__main__":
+    threading.Thread(target=run_http, daemon=True).start()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
