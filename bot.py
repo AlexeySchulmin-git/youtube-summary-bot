@@ -5,7 +5,7 @@ import requests
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
 from supabase import create_client
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +31,12 @@ CHUNK_OVERLAP_TOKENS = int(os.environ.get("CHUNK_OVERLAP_TOKENS", 200))
 ANALYST_MODEL_SMALL = os.environ.get("ANALYST_MODEL_SMALL", OPENAI_MODEL)
 ANALYST_MODEL_LARGE = os.environ.get("ANALYST_MODEL_LARGE", OPENAI_MODEL)
 SYNTHESIZER_MODEL = os.environ.get("SYNTHESIZER_MODEL", OPENAI_MODEL)
+
+MAIN_MENU = ReplyKeyboardMarkup(
+    [["📚 Мои конспекты"], ["ℹ️ Помощь"]],
+    resize_keyboard=True,
+    is_persistent=True,
+)
 
 
 def get_video_id(url: str) -> str:
@@ -319,7 +325,8 @@ def summarize_with_multi_agent_pipeline(text: str) -> tuple[str, int]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Отправь мне ссылку на YouTube видео — я сделаю краткий конспект и скажу, стоит ли его смотреть."
+        "👋 Привет! Отправь мне ссылку на YouTube видео — я сделаю краткий конспект и скажу, стоит ли его смотреть.",
+        reply_markup=MAIN_MENU,
     )
 
 
@@ -355,10 +362,15 @@ async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("У тебя пока нет сохранённых конспектов.")
             return
 
-        lines = ["🗂 **Твои последние конспекты:**"]
+        lines = ["🗂 **Твои последние конспекты**", ""]
         for idx, item in enumerate(items, start=1):
-            lines.append(f"{idx}. {item.get('video_url', '')}")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            lines.append(f"**{idx}.** {item.get('video_url', '')}")
+
+        bot_username = (await context.bot.get_me()).username
+        back_button = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("↩️ Вернуться в бота", url=f"https://t.me/{bot_username}")]]
+        )
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=back_button)
     except Exception as e:
         logging.warning(f"My summaries failed: {e}")
         await update.message.reply_text("Не удалось загрузить историю.")
@@ -369,7 +381,7 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         return
 
-    await query.answer()
+    await query.answer("Спасибо за оценку!")
     data = query.data or ""
     # format: fb:<summary_id>:up|down
     parts = data.split(":")
@@ -379,12 +391,27 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     summary_id, vote = parts[1], parts[2]
     liked = vote == "up"
     save_feedback_to_supabase(update, summary_id, liked)
-    await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text("Спасибо за оценку! ✅")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        logging.warning(f"Feedback markup edit failed: {e}")
+    if query.message:
+        await query.message.reply_text("Спасибо за оценку! ✅")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
+
+    if url == "📚 Мои конспекты":
+        await my_summaries(update, context)
+        return
+
+    if url == "ℹ️ Помощь":
+        await update.message.reply_text(
+            "Отправь ссылку на YouTube, либо нажми «📚 Мои конспекты».",
+            reply_markup=MAIN_MENU,
+        )
+        return
 
     if "youtube.com" not in url and "youtu.be" not in url:
         await update.message.reply_text("Пожалуйста, отправь ссылку на YouTube видео.")
@@ -448,6 +475,7 @@ if __name__ == "__main__":
             port=PORT,
             url_path="webhook",
             webhook_url=f"{WEBHOOK_URL}/webhook",
+            allowed_updates=Update.ALL_TYPES,
         )
     else:
-        app.run_polling(drop_pending_updates=True)
+        app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
