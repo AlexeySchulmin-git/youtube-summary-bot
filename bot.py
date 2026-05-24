@@ -636,10 +636,11 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^fb:"))
     app.add_error_handler(error_handler)
 
-    def _run_bot_polling():
-        app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    def _run_web_server():
+        logging.info(f"Starting Flask web server on port {PORT}")
+        web_app.run(host="0.0.0.0", port=PORT)
 
-    bot_thread = threading.Thread(target=_run_bot_polling, daemon=True)
-    bot_thread.start()
+    web_thread = threading.Thread(target=_run_web_server, daemon=True)
+    web_thread.start()
 
-    web_app.run(host="0.0.0.0", port=PORT)
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
