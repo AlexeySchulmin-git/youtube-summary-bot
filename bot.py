@@ -110,7 +110,6 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 if __name__ == "__main__":
-    # Удаляем старый webhook перед запуском
     try:
         r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true")
         logging.info(f"deleteWebhook: {r.json()}")
@@ -126,6 +125,7 @@ if __name__ == "__main__":
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
+            url_path="webhook",
             webhook_url=f"{WEBHOOK_URL}/webhook",
         )
     else:
