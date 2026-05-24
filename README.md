@@ -10,9 +10,13 @@
    - `OPENAI_API_KEY` — ключ для OpenAI-совместимого API
    - `OPENAI_BASE_URL` — базовый URL OpenAI-совместимого API (опционально)
    - `OPENAI_MODEL` — модель для суммаризации (опционально)
-   - `YOUTUBE_API_KEY` — ключ YouTube Data API (используется в первую очередь)
    - `SUPADATA_API_KEY` — ключ Supadata (используется как fallback)
 5. Нажми **Save Changes** и сделай redeploy сервиса
+
+## Порядок получения субтитров
+
+1. `youtube-transcript-api` (основной)
+2. `SUPADATA` (fallback)
 
 ## Файлы
 - `bot.py` — основной код бота
