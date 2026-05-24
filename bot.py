@@ -13,7 +13,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://ai.externcashpn.cv/v1")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
 SUPADATA_API_KEY = os.environ.get("SUPADATA_API_KEY")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://your-app.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 8080))
 
 client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
@@ -110,18 +110,23 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 if __name__ == "__main__":
+    # Удаляем старый webhook перед запуском
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true")
+        logging.info(f"deleteWebhook: {r.json()}")
+    except Exception as e:
+        logging.warning(f"deleteWebhook failed: {e}")
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
     if WEBHOOK_URL:
-        # Webhook режим — стабильнее на облаке
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             webhook_url=f"{WEBHOOK_URL}/webhook",
         )
     else:
-        # Polling — для локального запуска
         app.run_polling(drop_pending_updates=True)
