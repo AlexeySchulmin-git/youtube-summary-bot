@@ -104,8 +104,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summary = summarize(text)
         await update.message.reply_text(summary, parse_mode="Markdown")
     except Exception as e:
-        logging.error(e)
+        logging.error(f"Ошибка summarize: {e}")
         await update.message.reply_text("Ошибка при анализе. Попробуй ещё раз.")
+
+
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    logging.error(f"Необработанная ошибка: {context.error}")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -126,4 +130,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling()
+    app.add_error_handler(error_handler)
+    app.run_polling(drop_pending_updates=True)
