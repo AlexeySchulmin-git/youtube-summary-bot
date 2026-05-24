@@ -5,8 +5,8 @@ import requests
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
 from supabase import create_client
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 
@@ -55,9 +55,9 @@ def get_transcript(video_id: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summary: str, chunk_count: int, transcript_source: str):
+def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summary: str, chunk_count: int, transcript_source: str) -> str | None:
     if not supabase or not update.effective_user:
-        return
+        return None
 
     try:
         user = update.effective_user
@@ -77,7 +77,7 @@ def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summ
             .execute()
         )
         if not profile_resp.data:
-            return
+            return None
 
         user_id = profile_resp.data[0]["id"]
         summary_payload = {
@@ -91,9 +91,39 @@ def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summ
             "model_analyst_large": ANALYST_MODEL_LARGE,
             "model_synthesizer": SYNTHESIZER_MODEL,
         }
-        supabase.table("summaries").insert(summary_payload).execute()
+        summary_resp = supabase.table("summaries").insert(summary_payload).execute()
+        if summary_resp.data and len(summary_resp.data) > 0:
+            return summary_resp.data[0].get("id")
     except Exception as e:
         logging.warning(f"Supabase save failed: {e}")
+    return None
+
+
+def save_feedback_to_supabase(update: Update, summary_id: str, liked: bool):
+    if not supabase or not update.effective_user:
+        return
+
+    try:
+        user = update.effective_user
+        profile_resp = (
+            supabase.table("user_profiles")
+            .select("id")
+            .eq("telegram_user_id", user.id)
+            .limit(1)
+            .execute()
+        )
+        if not profile_resp.data:
+            return
+
+        user_id = profile_resp.data[0]["id"]
+        payload = {
+            "summary_id": summary_id,
+            "user_id": user_id,
+            "liked": liked,
+        }
+        supabase.table("summary_feedback").upsert(payload, on_conflict="summary_id,user_id").execute()
+    except Exception as e:
+        logging.warning(f"Supabase feedback save failed: {e}")
 
 
 def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
@@ -293,6 +323,66 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not supabase or not update.effective_user:
+        await update.message.reply_text("История пока недоступна.")
+        return
+
+    try:
+        user = update.effective_user
+        profile_resp = (
+            supabase.table("user_profiles")
+            .select("id")
+            .eq("telegram_user_id", user.id)
+            .limit(1)
+            .execute()
+        )
+        if not profile_resp.data:
+            await update.message.reply_text("У тебя пока нет сохранённых конспектов.")
+            return
+
+        user_id = profile_resp.data[0]["id"]
+        summaries_resp = (
+            supabase.table("summaries")
+            .select("video_url, created_at")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        )
+        items = summaries_resp.data or []
+        if not items:
+            await update.message.reply_text("У тебя пока нет сохранённых конспектов.")
+            return
+
+        lines = ["🗂 **Твои последние конспекты:**"]
+        for idx, item in enumerate(items, start=1):
+            lines.append(f"{idx}. {item.get('video_url', '')}")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logging.warning(f"My summaries failed: {e}")
+        await update.message.reply_text("Не удалось загрузить историю.")
+
+
+async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    await query.answer()
+    data = query.data or ""
+    # format: fb:<summary_id>:up|down
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "fb":
+        return
+
+    summary_id, vote = parts[1], parts[2]
+    liked = vote == "up"
+    save_feedback_to_supabase(update, summary_id, liked)
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text("Спасибо за оценку! ✅")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
 
@@ -320,7 +410,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summary, chunk_count = summarize_with_multi_agent_pipeline(text)
         await update.message.reply_text(summary, parse_mode="Markdown")
         if transcript_source:
-            save_summary_to_supabase(update, video_id, url, summary, chunk_count, transcript_source)
+            summary_id = save_summary_to_supabase(update, video_id, url, summary, chunk_count, transcript_source)
+            if summary_id:
+                keyboard = InlineKeyboardMarkup(
+                    [[
+                        InlineKeyboardButton("👍 Полезно", callback_data=f"fb:{summary_id}:up"),
+                        InlineKeyboardButton("👎 Слабо", callback_data=f"fb:{summary_id}:down"),
+                    ]]
+                )
+                await update.message.reply_text("Оцени конспект:", reply_markup=keyboard)
     except Exception as e:
         logging.error(f"Ошибка summarize: {e}")
         await update.message.reply_text("Ошибка при анализе. Попробуй ещё раз.")
@@ -339,7 +437,9 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("my", my_summaries))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^fb:"))
     app.add_error_handler(error_handler)
 
     if WEBHOOK_URL:
