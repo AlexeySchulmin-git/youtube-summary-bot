@@ -1,10 +1,13 @@
 import os
 import re
 import logging
+import threading
+from html import escape
 import requests
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
 from supabase import create_client
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -18,6 +21,8 @@ SUPADATA_API_KEY = os.environ.get("SUPADATA_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEB_APP_BASE_URL = os.environ.get("WEB_APP_BASE_URL")
+BOT_USERNAME = os.environ.get("BOT_USERNAME")
 PORT = int(os.environ.get("PORT", 8080))
 
 client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
@@ -33,10 +38,110 @@ ANALYST_MODEL_LARGE = os.environ.get("ANALYST_MODEL_LARGE", OPENAI_MODEL)
 SYNTHESIZER_MODEL = os.environ.get("SYNTHESIZER_MODEL", OPENAI_MODEL)
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [["📚 Мои конспекты"], ["ℹ️ Помощь"]],
+        [["📚 Мои конспекты"], ["📖 Справка"]],
     resize_keyboard=True,
     is_persistent=True,
 )
+
+web_app = Flask(__name__)
+
+
+def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
+        items_html = ""
+        for row in rows:
+                url = escape(row.get("video_url") or "")
+                text = escape((row.get("summary_markdown") or "")[:700])
+                created = escape((row.get("created_at") or "").replace("T", " ")[:19])
+                items_html += f"""
+                <article class=\"card\">
+                    <div class=\"meta\">{created}</div>
+                    <a class=\"video\" href=\"{url}\" target=\"_blank\">{url}</a>
+                    <p class=\"summary\">{text}</p>
+                </article>
+                """
+
+        bot_link = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "https://t.me"
+        if not items_html:
+                items_html = "<div class='empty'>Конспектов пока нет.</div>"
+
+        return f"""
+        <!doctype html>
+        <html lang=\"ru\"><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>
+        <title>Мои конспекты</title>
+        <style>
+            :root {{ --bg:#f3f4f6; --panel:#ffffff; --text:#1f2937; --muted:#6b7280; --line:#e5e7eb; }}
+            body {{ margin:0; font-family:Inter,system-ui,Segoe UI,Arial,sans-serif; background:var(--bg); color:var(--text);} }
+            .wrap {{ max-width:1200px; margin:24px auto; background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden; display:grid; grid-template-columns:260px 1fr; min-height:80vh; }}
+            .sidebar {{ border-right:1px solid var(--line); padding:20px; background:#fafafa; }}
+            .logo {{ font-weight:700; margin-bottom:18px; }}
+            .nav a {{ display:block; padding:10px 12px; border-radius:10px; text-decoration:none; color:var(--text); margin-bottom:6px; }}
+            .nav a.active {{ background:#eef2ff; }}
+            .back {{ margin-top:20px; display:inline-block; text-decoration:none; border:1px solid var(--line); padding:10px 12px; border-radius:10px; }}
+            .main {{ padding:24px; }}
+            h1 {{ margin:0 0 6px; font-size:28px; }}
+            .sub {{ color:var(--muted); margin-bottom:16px; }}
+            .grid {{ display:grid; gap:14px; }}
+            .card {{ border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff; }}
+            .meta {{ color:var(--muted); font-size:12px; margin-bottom:8px; }}
+            .video {{ font-weight:600; text-decoration:none; word-break:break-all; }}
+            .summary {{ white-space:pre-wrap; line-height:1.45; margin-top:10px; }}
+            .empty {{ border:1px dashed var(--line); border-radius:12px; padding:24px; color:var(--muted); text-align:center; }}
+            @media (max-width: 900px) {{ .wrap {{ grid-template-columns:1fr; }} .sidebar {{ border-right:0; border-bottom:1px solid var(--line);} }}
+        </style></head>
+        <body>
+            <div class=\"wrap\">
+                <aside class=\"sidebar\">
+                    <div class=\"logo\">YouTube Summary</div>
+                    <nav class=\"nav\">
+                        <a class=\"active\" href=\"#\">Мои конспекты</a>
+                    </nav>
+                    <a class=\"back\" href=\"{bot_link}\">↩ Вернуться в бота</a>
+                </aside>
+                <main class=\"main\">
+                    <h1>Конспекты пользователя #{telegram_user_id}</h1>
+                    <div class=\"sub\">Последние сохранённые конспекты</div>
+                    <section class=\"grid\">{items_html}</section>
+                </main>
+            </div>
+        </body></html>
+        """
+
+
+@web_app.get("/u/<int:telegram_user_id>")
+def user_summaries_page(telegram_user_id: int):
+        if not supabase:
+                return "Supabase не настроен", 500
+
+        try:
+                profile_resp = (
+                        supabase.table("user_profiles")
+                        .select("id")
+                        .eq("telegram_user_id", telegram_user_id)
+                        .limit(1)
+                        .execute()
+                )
+                if not profile_resp.data:
+                        return _render_summaries_page(telegram_user_id, [])
+
+                user_id = profile_resp.data[0]["id"]
+                summaries_resp = (
+                        supabase.table("summaries")
+                        .select("video_url, summary_markdown, created_at")
+                        .eq("user_id", user_id)
+                        .order("created_at", desc=True)
+                        .limit(30)
+                        .execute()
+                )
+                rows = summaries_resp.data or []
+                return _render_summaries_page(telegram_user_id, rows)
+        except Exception as e:
+                logging.warning(f"Summaries page failed: {e}")
+                return "Ошибка загрузки страницы", 500
+
+
+@web_app.get("/")
+def index_page():
+        return "OK", 200
 
 
 def get_video_id(url: str) -> str:
@@ -366,11 +471,13 @@ async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for idx, item in enumerate(items, start=1):
             lines.append(f"**{idx}.** {item.get('video_url', '')}")
 
-        bot_username = (await context.bot.get_me()).username
-        back_button = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("↩️ Вернуться в бота", url=f"https://t.me/{bot_username}")]]
-        )
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=back_button)
+        page_base = WEB_APP_BASE_URL.rstrip("/") if WEB_APP_BASE_URL else None
+        page_url = f"{page_base}/u/{user.id}" if page_base else None
+        if page_url:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Открыть страницу конспектов", url=page_url)]])
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
+        else:
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         logging.warning(f"My summaries failed: {e}")
         await update.message.reply_text("Не удалось загрузить историю.")
@@ -406,9 +513,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await my_summaries(update, context)
         return
 
-    if url == "ℹ️ Помощь":
+    if url == "📖 Справка":
         await update.message.reply_text(
-            "Отправь ссылку на YouTube, либо нажми «📚 Мои конспекты».",
+            "Я делаю конспекты YouTube-видео по ссылке.\n"
+            "1) Получаю субтитры\n"
+            "2) Разбиваю на чанки\n"
+            "3) Собираю итоговый конспект\n"
+            "4) Сохраняю в твою историю\n\n"
+            "Нажми «📚 Мои конспекты», чтобы открыть список.",
             reply_markup=MAIN_MENU,
         )
         return
@@ -469,13 +581,10 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^fb:"))
     app.add_error_handler(error_handler)
 
-    if WEBHOOK_URL:
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path="webhook",
-            webhook_url=f"{WEBHOOK_URL}/webhook",
-            allowed_updates=Update.ALL_TYPES,
-        )
-    else:
+    def _run_bot_polling():
         app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+
+    bot_thread = threading.Thread(target=_run_bot_polling, daemon=True)
+    bot_thread.start()
+
+    web_app.run(host="0.0.0.0", port=PORT)

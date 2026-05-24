@@ -3,3 +3,4 @@ openai
 requests
 youtube-transcript-api==0.6.2
 supabase
+flask
