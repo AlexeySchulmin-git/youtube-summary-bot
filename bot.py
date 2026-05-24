@@ -43,13 +43,24 @@ def get_transcript(video_id: str) -> str | None:
 
 def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
     try:
-        transcript_items = YouTubeTranscriptApi.get_transcript(
-            video_id,
-            languages=["ru", "en"],
-        )
+        # Совместимость с разными версиями youtube-transcript-api:
+        # - старые: YouTubeTranscriptApi.get_transcript(...)
+        # - новые: YouTubeTranscriptApi().fetch(...)
+        if hasattr(YouTubeTranscriptApi, "get_transcript"):
+            transcript_items = YouTubeTranscriptApi.get_transcript(
+                video_id,
+                languages=["ru", "en"],
+            )
+        else:
+            transcript = YouTubeTranscriptApi().fetch(video_id, languages=["ru", "en"])
+            transcript_items = list(transcript)
+
         if not transcript_items:
             return None
-        return " ".join(item.get("text", "") for item in transcript_items).strip()
+        return " ".join(
+            (item.get("text", "") if isinstance(item, dict) else getattr(item, "text", ""))
+            for item in transcript_items
+        ).strip()
     except Exception as e:
         logging.warning(f"youtube-transcript-api failed: {e}")
         return None
