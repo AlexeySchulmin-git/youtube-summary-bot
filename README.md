@@ -1,14 +1,18 @@
 # YouTube Summary Bot
 
-## Деплой на Railway
+## Деплой на Render (через GitHub)
 
-1. Создай аккаунт на [railway.app](https://railway.app)
-2. Нажми **New Project** → **Deploy from GitHub repo**
-3. Залей эти файлы в GitHub репозиторий
-4. В Railway перейди в **Variables** и добавь:
+1. Создай аккаунт на [render.com](https://render.com)
+2. Нажми **New** → **Web Service** → подключи GitHub-репозиторий
+3. Выбери ветку `main` и команду запуска бота
+4. В Render открой **Environment** и добавь:
    - `TELEGRAM_TOKEN` — токен от BotFather
-   - `GEMINI_API_KEY` — ключ от Google AI Studio
-5. Railway сам установит зависимости и запустит бота
+   - `OPENAI_API_KEY` — ключ для OpenAI-совместимого API
+   - `OPENAI_BASE_URL` — базовый URL OpenAI-совместимого API (опционально)
+   - `OPENAI_MODEL` — модель для суммаризации (опционально)
+   - `YOUTUBE_API_KEY` — ключ YouTube Data API (используется в первую очередь)
+   - `SUPADATA_API_KEY` — ключ Supadata (используется как fallback)
+5. Нажми **Save Changes** и сделай redeploy сервиса
 
 ## Файлы
 - `bot.py` — основной код бота

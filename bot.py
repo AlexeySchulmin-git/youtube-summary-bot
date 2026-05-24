@@ -12,6 +12,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://ai.externcashpn.cv/v1")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 SUPADATA_API_KEY = os.environ.get("SUPADATA_API_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 8080))
@@ -27,22 +28,120 @@ def get_video_id(url: str) -> str:
 
 
 def get_transcript(video_id: str) -> str | None:
-    url = "https://api.supadata.ai/v1/youtube/transcript"
-    headers = {"x-api-key": SUPADATA_API_KEY}
-    params = {"videoId": video_id, "text": True}
-    response = requests.get(url, headers=headers, params=params, timeout=30)
-    if response.status_code != 200:
-        logging.error(f"Supadata error: {response.status_code} {response.text}")
+    # 1) Пытаемся получить субтитры через официальный YouTube Data API (по ключу)
+    text = get_transcript_from_youtube_api(video_id)
+    if text:
+        logging.info("Transcript source: YouTube Data API")
+        return text
+
+    # 2) Если не получилось, используем SUPADATA
+    text = get_transcript_from_supadata(video_id)
+    if text:
+        logging.info("Transcript source: SUPADATA")
+    return text
+
+
+def _strip_srt_timestamps(srt_text: str) -> str:
+    lines = []
+    for line in srt_text.splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        if cleaned.isdigit():
+            continue
+        if "-->" in cleaned:
+            continue
+        lines.append(cleaned)
+    return " ".join(lines)
+
+
+def get_transcript_from_youtube_api(video_id: str) -> str | None:
+    if not YOUTUBE_API_KEY:
+        logging.warning("YOUTUBE_API_KEY is not set, skipping YouTube API transcript")
         return None
-    data = response.json()
-    if isinstance(data, str):
-        return data
-    if isinstance(data, dict):
-        content = data.get("content") or data.get("transcript") or data.get("text")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return " ".join(s.get("text", "") for s in content)
+
+    try:
+        list_url = "https://www.googleapis.com/youtube/v3/captions"
+        list_params = {
+            "part": "snippet",
+            "videoId": video_id,
+            "key": YOUTUBE_API_KEY,
+        }
+        list_resp = requests.get(list_url, params=list_params, timeout=30)
+        if list_resp.status_code != 200:
+            logging.warning(
+                "YouTube captions list error: %s %s",
+                list_resp.status_code,
+                list_resp.text,
+            )
+            return None
+
+        items = list_resp.json().get("items", [])
+        if not items:
+            logging.info("YouTube captions list is empty")
+            return None
+
+        # Пытаемся сначала взять русские субтитры, потом любые
+        selected = None
+        for item in items:
+            lang = (item.get("snippet") or {}).get("language")
+            if lang == "ru":
+                selected = item
+                break
+        if not selected:
+            selected = items[0]
+
+        caption_id = selected.get("id")
+        if not caption_id:
+            return None
+
+        download_url = f"https://www.googleapis.com/youtube/v3/captions/{caption_id}"
+        download_params = {
+            "tfmt": "srt",
+            "key": YOUTUBE_API_KEY,
+        }
+        download_resp = requests.get(download_url, params=download_params, timeout=30)
+        if download_resp.status_code != 200:
+            logging.warning(
+                "YouTube captions download error: %s %s",
+                download_resp.status_code,
+                download_resp.text,
+            )
+            return None
+
+        srt_text = download_resp.text.strip()
+        if not srt_text:
+            return None
+        return _strip_srt_timestamps(srt_text)
+    except Exception as e:
+        logging.warning(f"YouTube transcript fetch failed: {e}")
+        return None
+
+
+def get_transcript_from_supadata(video_id: str) -> str | None:
+    if not SUPADATA_API_KEY:
+        logging.warning("SUPADATA_API_KEY is not set")
+        return None
+
+    try:
+        url = "https://api.supadata.ai/v1/youtube/transcript"
+        headers = {"x-api-key": SUPADATA_API_KEY}
+        params = {"videoId": video_id, "text": True}
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        if response.status_code != 200:
+            logging.error(f"Supadata error: {response.status_code} {response.text}")
+            return None
+        data = response.json()
+        if isinstance(data, str):
+            return data
+        if isinstance(data, dict):
+            content = data.get("content") or data.get("transcript") or data.get("text")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return " ".join(s.get("text", "") for s in content)
+    except Exception as e:
+        logging.error(f"Supadata request failed: {e}")
     return None
 
 
