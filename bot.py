@@ -1,8 +1,8 @@
 import os
 import re
-import subprocess
 import logging
 import threading
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
 from telegram import Update
@@ -12,20 +12,10 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-YOUTUBE_COOKIES = os.environ.get("YOUTUBE_COOKIES")
+SUPADATA_API_KEY = os.environ.get("SUPADATA_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
-
-COOKIES_PATH = "/tmp/cookies.txt"
-
-# Записываем куки в файл при старте
-if YOUTUBE_COOKIES:
-    with open(COOKIES_PATH, "w", encoding="utf-8") as f:
-        f.write(YOUTUBE_COOKIES)
-    logging.info("Куки загружены")
-else:
-    logging.warning("YOUTUBE_COOKIES не задан")
 
 
 def get_video_id(url: str) -> str:
@@ -35,51 +25,31 @@ def get_video_id(url: str) -> str:
     raise ValueError("Не удалось найти ID видео")
 
 
-def download_subtitles(video_id: str) -> str | None:
-    tmp = f"/tmp/sub_{video_id}"
-    cmd = [
-        "yt-dlp",
-        "--skip-download",
-        "--write-auto-sub",
-        "--write-sub",
-        "--sub-langs", "ru,en,uk,de,fr,es,it,pl,pt,tr,ja,ko,zh-Hans",
-        "--convert-subs", "vtt",
-        "--remote-components", "ejs:github",
-        "--output", tmp,
-        f"https://www.youtube.com/watch?v={video_id}"
-    ]
+def get_transcript(video_id: str) -> str | None:
+    url = f"https://api.supadata.ai/v1/youtube/transcript"
+    headers = {"x-api-key": SUPADATA_API_KEY}
+    params = {
+        "videoId": video_id,
+        "text": True  # вернуть чистый текст без таймкодов
+    }
 
-    if YOUTUBE_COOKIES and os.path.exists(COOKIES_PATH):
-        cmd += ["--cookies", COOKIES_PATH]
+    response = requests.get(url, headers=headers, params=params, timeout=30)
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    logging.info(result.stdout[-500:] if result.stdout else "no stdout")
-    logging.info(result.stderr[-500:] if result.stderr else "no stderr")
+    if response.status_code != 200:
+        logging.error(f"Supadata error: {response.status_code} {response.text}")
+        return None
 
-    for f in os.listdir("/tmp"):
-        if f.startswith(f"sub_{video_id}") and f.endswith(".vtt"):
-            path = f"/tmp/{f}"
-            with open(path, encoding="utf-8") as file:
-                raw = file.read()
-            os.remove(path)
-            return parse_vtt(raw)
+    data = response.json()
+    # Supadata возвращает либо строку либо список сегментов
+    if isinstance(data, str):
+        return data
+    if isinstance(data, dict):
+        content = data.get("content") or data.get("transcript") or data.get("text")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return " ".join(s.get("text", "") for s in content)
     return None
-
-
-def parse_vtt(raw: str) -> str:
-    lines = raw.splitlines()
-    text_lines = []
-    prev = ""
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("WEBVTT") or "-->" in line or re.match(r"^\d+$", line):
-            continue
-        line = re.sub(r"<[^>]+>", "", line)
-        line = re.sub(r"&amp;", "&", line)
-        if line and line != prev:
-            text_lines.append(line)
-            prev = line
-    return " ".join(text_lines)
 
 
 def summarize(text: str) -> str:
@@ -121,10 +91,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Не могу найти ID видео. Проверь ссылку.")
         return
 
-    text = download_subtitles(video_id)
+    text = get_transcript(video_id)
 
     if not text or len(text) < 100:
-        await update.message.reply_text("😕 Субтитры не найдены. Проверь логи на Render.")
+        await update.message.reply_text("😕 Субтитры не найдены для этого видео.")
         return
 
     await update.message.reply_text("🤖 Анализирую содержание...")
