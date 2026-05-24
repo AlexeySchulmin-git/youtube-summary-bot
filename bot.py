@@ -86,7 +86,7 @@ def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
             .video {{ font-weight:600; text-decoration:none; word-break:break-all; }}
             .summary {{ white-space:pre-wrap; line-height:1.45; margin-top:10px; }}
             .empty {{ border:1px dashed var(--line); border-radius:12px; padding:24px; color:var(--muted); text-align:center; }}
-            @media (max-width: 900px) {{ .wrap {{ grid-template-columns:1fr; }} .sidebar {{ border-right:0; border-bottom:1px solid var(--line);} }}
+            @media (max-width: 900px) {{ .wrap {{ grid-template-columns:1fr; }} .sidebar {{ border-right:0; border-bottom:1px solid var(--line); }} }}
         </style></head>
         <body>
             <div class=\"wrap\">
