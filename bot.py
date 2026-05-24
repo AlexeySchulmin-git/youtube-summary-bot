@@ -12,9 +12,20 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+YOUTUBE_COOKIES = os.environ.get("YOUTUBE_COOKIES")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
+
+COOKIES_PATH = "/tmp/cookies.txt"
+
+# Записываем куки в файл при старте
+if YOUTUBE_COOKIES:
+    with open(COOKIES_PATH, "w", encoding="utf-8") as f:
+        f.write(YOUTUBE_COOKIES)
+    logging.info("Куки загружены")
+else:
+    logging.warning("YOUTUBE_COOKIES не задан")
 
 
 def get_video_id(url: str) -> str:
@@ -36,7 +47,13 @@ def download_subtitles(video_id: str) -> str | None:
         "--output", tmp,
         f"https://www.youtube.com/watch?v={video_id}"
     ]
-    subprocess.run(cmd, capture_output=True, text=True)
+
+    if YOUTUBE_COOKIES and os.path.exists(COOKIES_PATH):
+        cmd += ["--cookies", COOKIES_PATH]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    logging.info(result.stdout[-500:] if result.stdout else "no stdout")
+    logging.info(result.stderr[-500:] if result.stderr else "no stderr")
 
     for f in os.listdir("/tmp"):
         if f.startswith(f"sub_{video_id}") and f.endswith(".vtt"):
@@ -106,7 +123,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = download_subtitles(video_id)
 
     if not text or len(text) < 100:
-        await update.message.reply_text("😕 Субтитры не найдены для этого видео.")
+        await update.message.reply_text("😕 Субтитры не найдены. Проверь логи на Render.")
         return
 
     await update.message.reply_text("🤖 Анализирую содержание...")
@@ -119,7 +136,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ошибка при анализе. Попробуй ещё раз.")
 
 
-# Фиктивный HTTP сервер для Render
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
