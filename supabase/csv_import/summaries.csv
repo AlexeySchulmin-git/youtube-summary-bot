@@ -1,0 +1,2 @@
+user_telegram_id,video_id,video_url,transcript_source,summary_markdown,chunk_count,model_analyst_small,model_analyst_large,model_synthesizer
+123456789,dQw4w9WgXcQ,https://www.youtube.com/watch?v=dQw4w9WgXcQ,youtube-transcript-api,"🎯 Краткое резюме...",3,gpt-5.4,gpt-5.4,gpt-5.4
