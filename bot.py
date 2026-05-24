@@ -44,6 +44,7 @@ def download_subtitles(video_id: str) -> str | None:
         "--write-sub",
         "--sub-langs", "ru,en,uk,de,fr,es,it,pl,pt,tr,ja,ko,zh-Hans",
         "--convert-subs", "vtt",
+        "--remote-components", "ejs:github",
         "--output", tmp,
         f"https://www.youtube.com/watch?v={video_id}"
     ]
