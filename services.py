@@ -25,6 +25,25 @@ def get_video_id(url: str) -> str:
     raise ValueError("Не удалось найти ID видео")
 
 
+def get_video_title(video_url: str) -> str | None:
+    """Fetch YouTube title via oEmbed without API key."""
+    try:
+        resp = requests.get(
+            "https://www.youtube.com/oembed",
+            params={"url": video_url, "format": "json"},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        title = data.get("title") if isinstance(data, dict) else None
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+    except Exception as exc:
+        logger.warning(f"Failed to fetch video title: {exc}")
+    return None
+
+
 def get_transcript(video_id: str) -> tuple[str | None, str | None]:
     text = get_transcript_from_youtube_transcript_api(video_id)
     if text:
@@ -165,7 +184,6 @@ def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
         ).strip()
         return re.sub(r"\s+", " ", text).strip()
 
-    # Fast path
     try:
         if hasattr(YouTubeTranscriptApi, "get_transcript"):
             transcript_items = YouTubeTranscriptApi.get_transcript(video_id, languages=preferred_langs)
@@ -182,11 +200,9 @@ def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
     except Exception as exc:
         logger.warning(f"youtube-transcript-api fast path failed: {exc}")
 
-    # Deep fallback path: inspect available tracks and optionally translate
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-        # 1) Preferred direct tracks
         try:
             direct = transcript_list.find_transcript(preferred_langs)
             text = _join_items(direct.fetch())
@@ -195,7 +211,6 @@ def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
         except Exception:
             pass
 
-        # 2) Preferred generated tracks
         try:
             generated = transcript_list.find_generated_transcript(preferred_langs)
             text = _join_items(generated.fetch())
@@ -204,7 +219,6 @@ def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
         except Exception:
             pass
 
-        # 3) Any available track, optionally translate to Russian/English
         for tr in transcript_list:
             try:
                 text = _join_items(tr.fetch())
@@ -316,14 +330,15 @@ def select_analyst_model(chunk_text: str) -> str:
     return ANALYST_MODEL_LARGE if estimate_tokens(chunk_text) > 2200 else ANALYST_MODEL_SMALL
 
 
-def analyze_chunk(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
+def analyze_chunk(chunk_text: str, chunk_index: int, total_chunks: int, video_title: str | None = None) -> str:
     system_prompt = (
         "Ты эксперт в извлечении принципиальных идей. "
         "Выдай только то, без чего человек не поймёт суть. "
         "Не добавляй фактов, которых нет в тексте."
     )
+    title_block = f"Заголовок видео: {video_title}\n\n" if video_title else ""
     user_prompt = f"""
-Чанк {chunk_index}/{total_chunks}.
+{title_block}Чанк {chunk_index}/{total_chunks}.
 
 Верни результат в формате:
 1) Главная мысль (1-2 предложения)
@@ -331,6 +346,17 @@ def analyze_chunk(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
 3) Важные оговорки/ограничения (если есть)
 
 Сосредоточься на том, что важно именно в контексте этого видео.
+Учитывай заголовок видео как рамку контекста.
+Если в тексте упоминаются конкретные персоны, фиксируй их в ключевых идеях.
+
+ИГНОРИРУЙ:
+- Вступления и самопрезентации автора
+- Призывы подписаться, лайкнуть, включить уведомления
+- Спонсорские вставки и рекламу
+- Повторения одной мысли разными словами
+
+Пиши своими словами, не копируй фразы автора дословно.
+Включай цифры, названия инструментов, конкретные примеры, если это важно.
 Не добавляй оценок типа 'стоит ли смотреть'.
 
 Текст чанка:
@@ -349,7 +375,7 @@ def analyze_chunk(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
     return (response.choices[0].message.content or "").strip()
 
 
-def synthesize_analyses(analyses: list[str]) -> str:
+def synthesize_analyses(analyses: list[str], video_title: str | None = None) -> str:
     joined = "\n\n---\n\n".join(analyses)
     evolution_guidelines = get_quality_guidelines_text()
     evolution_block = (
@@ -364,8 +390,23 @@ def synthesize_analyses(analyses: list[str]) -> str:
         "и подстрой лексику/тон итогового конспекта под эту тему, сохраняя фактическую точность. "
         "Выделяй практические выводы, ключевые мысли и важные детали, которые стоит запомнить."
     )
+    title_block = f"Заголовок видео: {video_title}\n\n" if video_title else ""
     user_prompt = f"""
-Собери итоговый конспект строго в формате:
+{title_block}Собери итоговый конспект строго в формате:
+
+Правила:
+- Учитывай заголовок видео в формулировках конспекта.
+- Если в материале есть упоминания персон, укажи их по делу в релевантных пунктах.
+- Пиши своими словами, не копируй фразы автора дословно.
+- Включай цифры, названия инструментов, конкретные примеры, если необходимо.
+- Без вводных фраз: не начинай с "Конечно!", "Вот конспект:", "В этом видео..."
+- Сразу выдавай результат по структуре.
+
+ИГНОРИРУЙ:
+- Вступления и самопрезентации автора
+- Призывы подписаться, лайкнуть, включить уведомления
+- Спонсорские вставки и рекламу
+- Повторения одной мысли разными словами
 
 🎯 **Краткое резюме** (ровно 3 предложения)
 
@@ -389,7 +430,7 @@ def synthesize_analyses(analyses: list[str]) -> str:
     return (response.choices[0].message.content or "").strip()
 
 
-def summarize_with_multi_agent_pipeline(text: str) -> tuple[str, int]:
+def summarize_with_multi_agent_pipeline(text: str, video_title: str | None = None) -> tuple[str, int]:
     chunks = chunk_transcript(text, target_tokens=2500, max_tokens=3000, overlap_tokens=200)
     if not chunks:
         raise ValueError("Не удалось разбить транскрипт на чанки")
@@ -397,6 +438,6 @@ def summarize_with_multi_agent_pipeline(text: str) -> tuple[str, int]:
     analyses: list[str] = []
     total = len(chunks)
     for idx, chunk in enumerate(chunks, start=1):
-        analyses.append(analyze_chunk(chunk, idx, total))
+        analyses.append(analyze_chunk(chunk, idx, total, video_title=video_title))
 
-    return synthesize_analyses(analyses), total
+    return synthesize_analyses(analyses, video_title=video_title), total

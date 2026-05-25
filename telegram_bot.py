@@ -8,6 +8,7 @@ from telegram.error import Conflict
 from config import TELEGRAM_TOKEN, WEB_APP_BASE_URL, BOT_PROCESS_LOCK_PATH
 from services import (
     get_video_id,
+    get_video_title,
     get_saved_summary_for_user,
     get_transcript,
     chunk_transcript,
@@ -173,6 +174,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not transcript or len(transcript) < 100:
             return await update.message.reply_text("😕 Субтитры не найдены для этого видео.")
 
+        video_title = get_video_title(text)
+
         await update.message.reply_text("🧩 Разбиваю текст на части...")
         chunks = chunk_transcript(transcript, target_tokens=2500, max_tokens=3000, overlap_tokens=200)
         if not chunks:
@@ -184,10 +187,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for idx, chunk in enumerate(chunks, start=1):
             await progress_msg.edit_text(f"🤖 Анализирую содержание: {idx}/{total}")
-            analyses.append(analyze_chunk(chunk, idx, total))
+            analyses.append(analyze_chunk(chunk, idx, total, video_title=video_title))
 
         await progress_msg.edit_text("🧠 Собираю итоговый конспект...")
-        summary = synthesize_analyses(analyses)
+        summary = synthesize_analyses(analyses, video_title=video_title)
         chunk_count = total
 
         await update.message.reply_text(summary, parse_mode="Markdown")
