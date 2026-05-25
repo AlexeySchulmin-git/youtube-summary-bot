@@ -1,5 +1,6 @@
 import logging
 import os
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.error import Conflict
@@ -15,6 +16,8 @@ from services import (
 )
 
 logger = logging.getLogger(__name__)
+_ACTIVE_USERS: set[int] = set()
+_ACTIVE_USERS_LOCK = asyncio.Lock()
 
 
 class BotProcessLock:
@@ -122,6 +125,7 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip() if update.message and update.message.text else ""
+    user_id = update.effective_user.id if update.effective_user else None
 
     if text == "📚 Мои конспекты":
         return await my_summaries(update, context)
@@ -140,28 +144,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "youtube.com" not in text and "youtu.be" not in text:
         return await update.message.reply_text("Пожалуйста, отправь ссылку на YouTube видео.")
 
-    await update.message.reply_text("⏳ Загружаю субтитры...")
+    if user_id is not None:
+        async with _ACTIVE_USERS_LOCK:
+            if user_id in _ACTIVE_USERS:
+                return await update.message.reply_text("⏳ Уже обрабатываю предыдущее видео. Дождись завершения.")
+            _ACTIVE_USERS.add(user_id)
 
     try:
-        video_id = get_video_id(text)
-    except ValueError:
-        return await update.message.reply_text("Не могу найти ID видео. Проверь ссылку.")
+        await update.message.reply_text("⏳ Загружаю субтитры...")
 
-    saved = get_saved_summary_for_user(update, video_id)
-    if saved:
-        await update.message.reply_text(
-            "📌 Этот ролик уже сохранён в твоих конспектах. Вот существующий конспект:",
-            parse_mode="Markdown",
-        )
-        return await update.message.reply_text(saved.get("summary_markdown", ""), parse_mode="Markdown")
+        try:
+            video_id = get_video_id(text)
+        except ValueError:
+            return await update.message.reply_text("Не могу найти ID видео. Проверь ссылку.")
 
-    transcript, source = get_transcript(video_id)
-    if not transcript or len(transcript) < 100:
-        return await update.message.reply_text("😕 Субтитры не найдены для этого видео.")
+        saved = get_saved_summary_for_user(update, video_id)
+        if saved:
+            await update.message.reply_text(
+                "📌 Этот ролик уже сохранён в твоих конспектах. Вот существующий конспект:",
+                parse_mode="Markdown",
+            )
+            return await update.message.reply_text(saved.get("summary_markdown", ""), parse_mode="Markdown")
 
-    await update.message.reply_text("🤖 Анализирую содержание...")
+        transcript, source = get_transcript(video_id)
+        if not transcript or len(transcript) < 100:
+            return await update.message.reply_text("😕 Субтитры не найдены для этого видео.")
 
-    try:
+        await update.message.reply_text("🤖 Анализирую содержание...")
+
         summary, chunk_count = summarize_with_multi_agent_pipeline(transcript)
         await update.message.reply_text(summary, parse_mode="Markdown")
         if source:
@@ -177,6 +187,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         logger.error(f"Ошибка summarize: {exc}")
         return await update.message.reply_text("Ошибка при анализе. Попробуй ещё раз.")
+    finally:
+        if user_id is not None:
+            async with _ACTIVE_USERS_LOCK:
+                _ACTIVE_USERS.discard(user_id)
 
 
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
