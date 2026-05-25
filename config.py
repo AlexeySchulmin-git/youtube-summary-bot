@@ -11,6 +11,10 @@ WEB_APP_BASE_URL = os.environ.get("WEB_APP_BASE_URL")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 PORT = int(os.environ.get("PORT", 8080))
 BOT_PROCESS_LOCK_PATH = os.environ.get("BOT_PROCESS_LOCK_PATH", "/tmp/youtube_summary_bot.lock")
+QUALITY_EVOLUTION_ENABLED = os.environ.get("QUALITY_EVOLUTION_ENABLED", "1") == "1"
+QUALITY_STATE_PATH = os.environ.get("QUALITY_STATE_PATH", "quality_state.json")
+QUALITY_HISTORY_LIMIT = int(os.environ.get("QUALITY_HISTORY_LIMIT", 200))
+QUALITY_MIN_OVERALL_SCORE = float(os.environ.get("QUALITY_MIN_OVERALL_SCORE", 4.2))
 
 CHUNK_TARGET_TOKENS = int(os.environ.get("CHUNK_TARGET_TOKENS", 2500))
 CHUNK_MAX_TOKENS = int(os.environ.get("CHUNK_MAX_TOKENS", 3000))

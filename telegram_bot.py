@@ -10,10 +10,13 @@ from services import (
     get_video_id,
     get_saved_summary_for_user,
     get_transcript,
-    summarize_with_multi_agent_pipeline,
+    chunk_transcript,
+    analyze_chunk,
+    synthesize_analyses,
     save_summary_to_supabase,
     save_feedback_to_supabase,
 )
+from quality_agent import evaluate_and_evolve
 
 logger = logging.getLogger(__name__)
 _ACTIVE_USERS: set[int] = set()
@@ -151,7 +154,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _ACTIVE_USERS.add(user_id)
 
     try:
-        await update.message.reply_text("⏳ Загружаю субтитры...")
+        await update.message.reply_text("⏳ Загружаю текст...")
 
         try:
             video_id = get_video_id(text)
@@ -170,10 +173,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not transcript or len(transcript) < 100:
             return await update.message.reply_text("😕 Субтитры не найдены для этого видео.")
 
-        await update.message.reply_text("🤖 Анализирую содержание...")
+        await update.message.reply_text("🧩 Разбиваю текст на части...")
+        chunks = chunk_transcript(transcript, target_tokens=2500, max_tokens=3000, overlap_tokens=200)
+        if not chunks:
+            return await update.message.reply_text("Ошибка при обработке текста. Попробуй ещё раз.")
 
-        summary, chunk_count = summarize_with_multi_agent_pipeline(transcript)
+        total = len(chunks)
+        analyses: list[str] = []
+        progress_msg = await update.message.reply_text(f"🤖 Анализирую содержание: 0/{total}")
+
+        for idx, chunk in enumerate(chunks, start=1):
+            await progress_msg.edit_text(f"🤖 Анализирую содержание: {idx}/{total}")
+            analyses.append(analyze_chunk(chunk, idx, total))
+
+        await progress_msg.edit_text("🧠 Собираю итоговый конспект...")
+        summary = synthesize_analyses(analyses)
+        chunk_count = total
+
         await update.message.reply_text(summary, parse_mode="Markdown")
+        await progress_msg.edit_text("✅ Конспект готов")
+
+        try:
+            quality_result = evaluate_and_evolve(video_id=video_id, transcript=transcript, summary=summary)
+            if quality_result.get("enabled"):
+                item = quality_result.get("item") or {}
+                score = (item.get("scores") or {}).get("overall")
+                logger.info(f"Quality eval completed. overall={score}")
+        except Exception as q_exc:
+            logger.warning(f"Quality evaluation failed: {q_exc}")
+
         if source:
             summary_id = save_summary_to_supabase(update, video_id, text, summary, chunk_count, source)
             if summary_id:

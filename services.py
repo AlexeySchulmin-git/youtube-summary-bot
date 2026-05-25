@@ -13,6 +13,7 @@ from config import (
     SUPADATA_API_KEY,
     SUPABASE,
 )
+from quality_agent import get_quality_guidelines_text
 
 logger = logging.getLogger(__name__)
 
@@ -155,23 +156,77 @@ def save_feedback_to_supabase(update: Update, summary_id: str, liked: bool):
 
 
 def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
+    preferred_langs = ["ru", "uk", "en", "en-US", "en-GB"]
+
+    def _join_items(items) -> str:
+        text = " ".join(
+            (item.get("text", "") if isinstance(item, dict) else getattr(item, "text", ""))
+            for item in items
+        ).strip()
+        return re.sub(r"\s+", " ", text).strip()
+
+    # Fast path
     try:
         if hasattr(YouTubeTranscriptApi, "get_transcript"):
-            transcript_items = YouTubeTranscriptApi.get_transcript(video_id, languages=["ru", "en"])
+            transcript_items = YouTubeTranscriptApi.get_transcript(video_id, languages=preferred_langs)
         else:
-            transcript = YouTubeTranscriptApi().fetch(video_id, languages=["ru", "en"])
+            transcript = YouTubeTranscriptApi().fetch(video_id, languages=preferred_langs)
             transcript_items = list(transcript)
 
         if not transcript_items:
-            return None
+            raise RuntimeError("Empty transcript items on fast path")
 
-        return " ".join(
-            (item.get("text", "") if isinstance(item, dict) else getattr(item, "text", ""))
-            for item in transcript_items
-        ).strip()
+        text = _join_items(transcript_items)
+        if text:
+            return text
     except Exception as exc:
-        logger.warning(f"youtube-transcript-api failed: {exc}")
-        return None
+        logger.warning(f"youtube-transcript-api fast path failed: {exc}")
+
+    # Deep fallback path: inspect available tracks and optionally translate
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+
+        # 1) Preferred direct tracks
+        try:
+            direct = transcript_list.find_transcript(preferred_langs)
+            text = _join_items(direct.fetch())
+            if text:
+                return text
+        except Exception:
+            pass
+
+        # 2) Preferred generated tracks
+        try:
+            generated = transcript_list.find_generated_transcript(preferred_langs)
+            text = _join_items(generated.fetch())
+            if text:
+                return text
+        except Exception:
+            pass
+
+        # 3) Any available track, optionally translate to Russian/English
+        for tr in transcript_list:
+            try:
+                text = _join_items(tr.fetch())
+                if text:
+                    return text
+            except Exception:
+                pass
+
+            if getattr(tr, "is_translatable", False):
+                for target_lang in ("ru", "en"):
+                    try:
+                        translated = tr.translate(target_lang)
+                        text = _join_items(translated.fetch())
+                        if text:
+                            return text
+                    except Exception:
+                        continue
+
+    except Exception as exc:
+        logger.warning(f"youtube-transcript-api fallback failed: {exc}")
+
+    return None
 
 
 def get_transcript_from_supadata(video_id: str) -> str | None:
@@ -296,6 +351,12 @@ def analyze_chunk(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
 
 def synthesize_analyses(analyses: list[str]) -> str:
     joined = "\n\n---\n\n".join(analyses)
+    evolution_guidelines = get_quality_guidelines_text()
+    evolution_block = (
+        f"\n\nДополнительные эволюционные правила качества (сформированы на основе прошлых оценок):\n{evolution_guidelines}\n"
+        if evolution_guidelines
+        else ""
+    )
     system_prompt = (
         "Ты синтезируешь несколько частичных аналитик в единый конспект. "
         "Сосредоточься на самых важных вещах из видео, избегай оценок формата 'стоит ли смотреть'. "
@@ -314,6 +375,7 @@ def synthesize_analyses(analyses: list[str]) -> str:
 
 Материалы для синтеза:
 {joined}
+{evolution_block}
 """
     response = CLIENT.chat.completions.create(
         model=SYNTHESIZER_MODEL,
