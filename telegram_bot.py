@@ -23,6 +23,24 @@ class BotProcessLock:
         self.fd = None
 
     def acquire(self) -> bool:
+        # Cleanup stale lock file (e.g. previous crash/redeploy)
+        try:
+            if os.path.exists(self.path):
+                with open(self.path, "r", encoding="utf-8") as f:
+                    raw_pid = f.read().strip()
+                stale = True
+                if raw_pid.isdigit():
+                    pid = int(raw_pid)
+                    try:
+                        os.kill(pid, 0)
+                        stale = False
+                    except OSError:
+                        stale = True
+                if stale:
+                    os.remove(self.path)
+        except Exception as exc:
+            logger.warning(f"Failed to validate existing lock file: {exc}")
+
         try:
             self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(self.fd, str(os.getpid()).encode("utf-8"))
@@ -195,7 +213,6 @@ def run_telegram_bot():
 
     app = create_application()
     try:
-        app.bot.delete_webhook(drop_pending_updates=True)
         app.run_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES,
