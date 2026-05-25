@@ -1,4 +1,5 @@
 import logging
+from html import escape
 from flask import Flask
 
 from config import BOT_USERNAME, PORT, SUPABASE
