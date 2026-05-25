@@ -10,6 +10,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 WEB_APP_BASE_URL = os.environ.get("WEB_APP_BASE_URL")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 PORT = int(os.environ.get("PORT", 8080))
+BOT_PROCESS_LOCK_PATH = os.environ.get("BOT_PROCESS_LOCK_PATH", "/tmp/youtube_summary_bot.lock")
 
 CHUNK_TARGET_TOKENS = int(os.environ.get("CHUNK_TARGET_TOKENS", 2500))
 CHUNK_MAX_TOKENS = int(os.environ.get("CHUNK_MAX_TOKENS", 3000))

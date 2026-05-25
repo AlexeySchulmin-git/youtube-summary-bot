@@ -1,8 +1,10 @@
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.error import Conflict
 
-from config import TELEGRAM_TOKEN, WEB_APP_BASE_URL
+from config import TELEGRAM_TOKEN, WEB_APP_BASE_URL, BOT_PROCESS_LOCK_PATH
 from services import (
     get_video_id,
     get_saved_summary_for_user,
@@ -13,6 +15,31 @@ from services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class BotProcessLock:
+    def __init__(self, path: str):
+        self.path = path
+        self.fd = None
+
+    def acquire(self) -> bool:
+        try:
+            self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(self.fd, str(os.getpid()).encode("utf-8"))
+            os.fsync(self.fd)
+            return True
+        except FileExistsError:
+            return False
+
+    def release(self):
+        try:
+            if self.fd is not None:
+                os.close(self.fd)
+                self.fd = None
+            if os.path.exists(self.path):
+                os.remove(self.path)
+        except Exception as exc:
+            logger.warning(f"Failed to release bot process lock: {exc}")
 
 MAIN_MENU = ReplyKeyboardMarkup(
     [["📚 Мои конспекты"], ["📖 Справка"]],
@@ -135,11 +162,23 @@ def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Ошибка: {context.error}")
+    err = context.error
+    if isinstance(err, Conflict):
+        logger.warning("Conflict in getUpdates: another bot instance is using the same token.")
+        return
+    logger.error(f"Ошибка: {err}")
 
 
 def create_application():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(TELEGRAM_TOKEN)
+        .connect_timeout(20)
+        .read_timeout(25)
+        .write_timeout(25)
+        .pool_timeout(15)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("my", my_summaries))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -149,5 +188,20 @@ def create_application():
 
 
 def run_telegram_bot():
+    lock = BotProcessLock(BOT_PROCESS_LOCK_PATH)
+    if not lock.acquire():
+        logger.warning("Telegram polling is skipped: another process lock is active.")
+        return
+
     app = create_application()
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    try:
+        app.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False,
+            stop_signals=None,
+        )
+    except Conflict:
+        logger.error("Bot polling stopped: Conflict (another instance is already running).")
+    finally:
+        lock.release()

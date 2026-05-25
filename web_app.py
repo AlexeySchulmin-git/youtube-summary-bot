@@ -1,5 +1,6 @@
 import logging
 from html import escape
+
 from flask import Flask
 
 from config import BOT_USERNAME, PORT, SUPABASE
@@ -9,31 +10,56 @@ web_app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
 
+def _render_comment_item(author: str, ago: str, text: str) -> str:
+    return f"""
+    <article class=\"comment\">
+      <div class=\"comment-head\">
+        <div class=\"avatar\">{escape(author[:1].upper())}</div>
+        <div>
+          <div class=\"comment-author\">{escape(author)}</div>
+          <div class=\"comment-time\">{escape(ago)}</div>
+        </div>
+      </div>
+      <p class=\"comment-text\">{escape(text)}</p>
+      <div class=\"comment-actions\">👍 👎 Reply</div>
+    </article>
+    """
+
+
 def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
     items_html = ""
     for row in rows:
-        url = row.get("video_url") or ""
-        created = (row.get("created_at") or "").replace("T", " ")[:19]
-        preview = summary_preview(row.get("summary_markdown") or "")
+        url = escape(row.get("video_url") or "")
+        created = escape((row.get("created_at") or "").replace("T", " ")[:19])
+        preview = escape(summary_preview(row.get("summary_markdown") or ""))
         summary_html = markdown_to_html(row.get("summary_markdown") or "")
 
         items_html += f"""
-        <details class=\"card\">
-            <summary class=\"card-summary\">
-                <div class=\"card-meta\">
-                    <span class=\"meta-date\">{created}</span>
-                    <a class=\"video-link\" href=\"{url}\" target=\"_blank\">{url}</a>
-                </div>
-                <div class=\"card-preview\">{preview}</div>
-            </summary>
-            <div class=\"card-body\">{summary_html}</div>
+        <details class=\"card\" open>
+          <summary class=\"card-summary\">
+            <div class=\"card-meta\">
+              <span class=\"meta-date\">🕒 {created}</span>
+              <a class=\"video-link\" href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>
+            </div>
+            <div class=\"card-preview\">{preview}</div>
+          </summary>
+          <div class=\"card-body\">{summary_html}</div>
         </details>
         """
 
     if not items_html:
         items_html = "<div class='empty'>Конспектов пока нет.</div>"
 
+    comments_html = "".join(
+        [
+            _render_comment_item("Azahra Ge", "2 days ago", "Updated spacing in note cards and improved readability."),
+            _render_comment_item("Arbian Musaf", "2 days ago", "Typography tune-up is in progress. Final polish next."),
+            _render_comment_item("Azahra Ge", "1 day ago", "Reviewed alignment in dashboard blocks and side panel."),
+        ]
+    )
+
     bot_link = escape(f"https://t.me/{BOT_USERNAME}") if BOT_USERNAME else "https://t.me"
+
     return f"""
     <!doctype html>
     <html lang=\"ru\">
@@ -43,57 +69,154 @@ def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
         <title>Мои конспекты</title>
         <style>
           :root {{
-            color-scheme: light;
-            color: #111827;
-            background: #f8fafc;
-            --bg: #f8fafc;
+            --bg: #f3f4f6;
+            --shell: #ffffff;
             --panel: #ffffff;
-            --panel-alt: #f3f4f6;
+            --panel-soft: #f8fafc;
             --border: #e5e7eb;
+            --text: #111827;
             --muted: #6b7280;
             --accent: #2563eb;
             --accent-soft: #eff6ff;
           }}
           * {{ box-sizing: border-box; }}
-          body {{ margin: 0; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: #111827; }}
+          body {{ margin: 0; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }}
           a {{ color: var(--accent); text-decoration: none; }}
           a:hover {{ text-decoration: underline; }}
-          .wrap {{ max-width: 1120px; margin: 24px auto; padding: 16px; }}
-          .header {{ display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 20px; }}
-          .title-block {{ display: grid; gap: 8px; }}
-          h1 {{ margin: 0; font-size: clamp(2rem, 3vw, 2.4rem); }}
-          .subtitle {{ margin: 0; color: var(--muted); max-width: 720px; }}
-          .sidebar {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }}
-          .button {{ display: inline-flex; align-items: center; gap: 8px; padding: 12px 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel); color: #111827; font-weight: 600; }}
+
+          .app {{ max-width: 1380px; margin: 28px auto; padding: 0 16px; }}
+          .shell {{
+            background: var(--shell);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+            min-height: 84vh;
+            display: grid;
+            grid-template-columns: 250px minmax(0, 1fr) 320px;
+          }}
+
+          .left {{ border-right: 1px solid var(--border); background: #fcfcfd; padding: 18px 14px; display: flex; flex-direction: column; gap: 18px; }}
+          .brand {{ font-weight: 700; font-size: 1.1rem; padding: 10px 8px; }}
+          .menu-title {{ color: var(--muted); font-size: 0.75rem; letter-spacing: .06em; text-transform: uppercase; padding: 0 8px; }}
+          .menu {{ display: grid; gap: 6px; }}
+          .menu a {{ color: #1f2937; padding: 10px 12px; border-radius: 10px; font-weight: 500; }}
+          .menu a.active {{ background: var(--accent-soft); color: #1d4ed8; }}
+          .left-footer {{ margin-top: auto; padding: 8px; }}
+          .button {{ display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border); background: #fff; color: #111827; font-weight: 600; }}
           .button:hover {{ background: var(--accent-soft); border-color: var(--accent); }}
-          .grid {{ display: grid; gap: 16px; }}
-          .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 18px; overflow: hidden; box-shadow: 0 14px 32px rgba(15, 23, 42, 0.06); }}
-          summary.card-summary {{ list-style: none; cursor: pointer; padding: 20px; }}
+
+          .main {{ padding: 0; background: #fff; }}
+          .toolbar {{ height: 64px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 18px; }}
+          .toolbar-left {{ display: flex; align-items: center; gap: 12px; min-width: 0; }}
+          .search {{ display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; min-width: 290px; background: #fff; color: #6b7280; }}
+          .search input {{ border: 0; outline: none; width: 100%; font-size: .92rem; color: #374151; }}
+          .toolbar-right {{ display: flex; align-items: center; gap: 8px; }}
+          .icon-btn {{ width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: #fff; color: #374151; font-size: .95rem; }}
+
+          .content {{ padding: 22px 24px; }}
+          .header {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; }}
+          .title-block {{ display: grid; gap: 10px; }}
+          h1 {{ margin: 0; font-size: clamp(1.8rem, 2.6vw, 2.35rem); line-height: 1.15; }}
+          .subtitle {{ margin: 0; color: var(--muted); max-width: 720px; line-height: 1.5; }}
+          .tags {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+          .tag {{ border: 1px solid var(--border); background: #f9fafb; padding: 6px 10px; border-radius: 999px; font-size: .82rem; color: #374151; }}
+
+          .grid {{ display: grid; gap: 14px; }}
+          .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }}
+          summary.card-summary {{ list-style: none; cursor: pointer; padding: 16px 18px; background: #fff; }}
           summary.card-summary::-webkit-details-marker {{ display: none; }}
           .card-meta {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }}
-          .meta-date {{ color: var(--muted); font-size: 0.95rem; }}
-          .video-link {{ font-size: 0.98rem; font-weight: 600; color: #1d4ed8; word-break: break-all; }}
-          .card-preview {{ margin-top: 12px; color: #334155; line-height: 1.7; min-height: 60px; }}
-          .card-body {{ padding: 0 20px 20px; border-top: 1px solid var(--border); background: var(--panel-alt); }}
+          .meta-date {{ color: var(--muted); font-size: 0.9rem; }}
+          .video-link {{ font-size: 0.95rem; font-weight: 600; color: #1d4ed8; word-break: break-all; }}
+          .card-preview {{ margin-top: 10px; color: #334155; line-height: 1.65; min-height: 36px; }}
+          .card-body {{ padding: 16px 18px 18px; border-top: 1px solid var(--border); background: var(--panel-soft); }}
           .card-body p {{ margin: 0 0 14px; line-height: 1.8; }}
           .card-body ul {{ margin: 0 0 14px 20px; padding: 0; }}
           .card-body li {{ margin-bottom: 10px; }}
           .empty {{ padding: 28px 24px; border: 1px dashed var(--border); border-radius: 18px; color: var(--muted); text-align: center; background: var(--panel); }}
-          @media (max-width: 820px) {{ .header {{ flex-direction: column; align-items: stretch; }} .card-body {{ padding: 0 16px 16px; }} }}
+
+          .right {{ border-left: 1px solid var(--border); background: #fcfcfd; display: flex; flex-direction: column; min-height: 100%; }}
+          .comments-top {{ height: 64px; border-bottom: 1px solid var(--border); padding: 0 14px; display: flex; align-items: center; justify-content: space-between; }}
+          .comments-title {{ font-weight: 700; font-size: 0.95rem; }}
+          .comments-body {{ padding: 12px; display: grid; gap: 10px; }}
+          .comments-search {{ border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; color: #6b7280; font-size: .9rem; background: #fff; }}
+          .comment {{ border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: #fff; }}
+          .comment-head {{ display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }}
+          .avatar {{ width: 24px; height: 24px; border-radius: 50%; background: #dbeafe; color: #1d4ed8; display: inline-flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 700; }}
+          .comment-author {{ font-size: .86rem; font-weight: 600; color: #111827; }}
+          .comment-time {{ font-size: .75rem; color: var(--muted); }}
+          .comment-text {{ margin: 0 0 8px; font-size: .86rem; line-height: 1.45; color: #374151; }}
+          .comment-actions {{ font-size: .78rem; color: var(--muted); }}
+
+          @media (max-width: 1180px) {{
+            .shell {{ grid-template-columns: 220px minmax(0, 1fr); }}
+            .right {{ display: none; }}
+          }}
+          @media (max-width: 820px) {{
+            .shell {{ grid-template-columns: 1fr; }}
+            .left {{ border-right: 0; border-bottom: 1px solid var(--border); }}
+            .search {{ min-width: 180px; }}
+            .content {{ padding: 16px; }}
+            .card-body {{ padding: 14px 14px 16px; }}
+          }}
         </style>
       </head>
       <body>
-        <div class=\"wrap\">
-          <div class=\"header\">
-            <div class=\"title-block\">
-              <h1>Конспекты пользователя #{telegram_user_id}</h1>
-              <p class=\"subtitle\">Здесь хранятся переформулированные конспекты видео в удобном формате. Раскрывай карточки, чтобы увидеть полный текст.</p>
-            </div>
-            <div class=\"sidebar\">
-              <a class=\"button\" href=\"{bot_link}\">↩ Вернуться в бота</a>
-            </div>
+        <div class=\"app\">
+          <div class=\"shell\">
+            <aside class=\"left\">
+              <div class=\"brand\">📝 YouTube Summary</div>
+              <div class=\"menu-title\">Main menu</div>
+              <nav class=\"menu\">
+                <a class=\"active\" href=\"#\">Конспекты</a>
+                <a href=\"{bot_link}\">Вернуться в бота</a>
+              </nav>
+              <div class=\"left-footer\">
+                <a class=\"button\" href=\"{bot_link}\">↩ Открыть Telegram</a>
+              </div>
+            </aside>
+
+            <main class=\"main\">
+              <div class=\"toolbar\">
+                <div class=\"toolbar-left\">
+                  <span class=\"icon-btn\">☰</span>
+                  <label class=\"search\">🔎 <input type=\"text\" placeholder=\"Search anything\" /></label>
+                </div>
+                <div class=\"toolbar-right\">
+                  <span class=\"icon-btn\">🔔</span>
+                  <span class=\"icon-btn\">⚙️</span>
+                  <span class=\"icon-btn\">＋</span>
+                </div>
+              </div>
+
+              <div class=\"content\">
+                <div class=\"header\">
+                  <div class=\"title-block\">
+                    <h1>Конспекты пользователя #{telegram_user_id}</h1>
+                    <p class=\"subtitle\">Удобная рабочая лента конспектов: сверху краткий preview, внутри карточки — полный структурированный текст.</p>
+                    <div class=\"tags\">
+                      <span class=\"tag\">YouTube</span>
+                      <span class=\"tag\">AI Summary</span>
+                      <span class=\"tag\">User #{telegram_user_id}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class=\"grid\">{items_html}</div>
+              </div>
+            </main>
+
+            <aside class=\"right\">
+              <div class=\"comments-top\">
+                <div class=\"comments-title\">Comments</div>
+                <span class=\"icon-btn\">✕</span>
+              </div>
+              <div class=\"comments-body\">
+                <div class=\"comments-search\">🔎 Search comments</div>
+                {comments_html}
+              </div>
+            </aside>
           </div>
-          <div class=\"grid\">{items_html}</div>
         </div>
       </body>
     </html>
