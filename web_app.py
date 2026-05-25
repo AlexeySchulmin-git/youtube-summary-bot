@@ -3,11 +3,6 @@ from html import escape
 
 from flask import Flask
 
-import logging
-from html import escape
-
-from flask import Flask
-
 from config import BOT_USERNAME, PORT, SUPABASE
 from utils import markdown_to_html, summary_preview_html
 
@@ -196,4 +191,3 @@ def index_page():
 def run_web_server():
     logger.info(f"Starting Flask web server on port {PORT}")
     web_app.run(host="0.0.0.0", port=PORT)
-            .select("video_url, summary_markdown, created_at")
