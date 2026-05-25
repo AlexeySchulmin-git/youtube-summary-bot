@@ -44,3 +44,17 @@ def summary_preview(summary_text: str, max_length: int = 220) -> str:
         return tidy
     shortened = tidy[:max_length].rsplit(" ", 1)[0]
     return f"{shortened}…"
+
+
+def summary_preview_html(summary_text: str, max_length: int = 320) -> str:
+    text = summary_text or ""
+    match = re.search(
+        r"(?:🎯\s*)?\*\*Краткое резюме\*\*\s*(.+?)(?=(?:📌\s*\*\*Важные вещи\*\*)|$)",
+        text,
+        flags=re.S,
+    )
+    body = (match.group(1) if match else text).strip()
+    body = re.sub(r"\s+", " ", body)
+    if len(body) > max_length:
+        body = body[:max_length].rsplit(" ", 1)[0] + "…"
+    return f"<span class=\"preview-title\">🎯 Краткое резюме</span> {escape(body)}"
