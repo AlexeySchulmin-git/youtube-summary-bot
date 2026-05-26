@@ -45,7 +45,8 @@ def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Мои конспекты</title>
-        <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232563eb'/%3E%3Cpath d='M22 20h6l6 16 6-16h6l-10 24h-4z' fill='white'/%3E%3C/svg%3E">
+        <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%232563eb%22/%3E%3Cpath%20d%3D%22M22%2020h6l6%2016%206-16h6l-10%2024h-4z%22%20fill%3D%22white%22/%3E%3C/svg%3E">
+        <link rel="shortcut icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%232563eb%22/%3E%3Cpath%20d%3D%22M22%2020h6l6%2016%206-16h6l-10%2024h-4z%22%20fill%3D%22white%22/%3E%3C/svg%3E">
         <style>
           :root {{
             --bg: #f3f4f6;
