@@ -27,6 +27,7 @@ _GLOBAL_CONCURRENCY_LIMIT = 2
 _GLOBAL_WORKERS = asyncio.Semaphore(_GLOBAL_CONCURRENCY_LIMIT)
 _WAITING_COUNT = 0
 _WAITING_LOCK = asyncio.Lock()
+_CONFLICT_EXIT_TRIGGERED = False
 
 
 class BotProcessLock:
@@ -297,13 +298,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    global _CONFLICT_EXIT_TRIGGERED
     err = context.error
     if isinstance(err, Conflict):
-        logger.warning("Conflict in getUpdates: another bot instance is using the same token.")
-        try:
-            await context.application.stop()
-        except Exception:
-            pass
+        if not _CONFLICT_EXIT_TRIGGERED:
+            _CONFLICT_EXIT_TRIGGERED = True
+            logger.error("Conflict in getUpdates: another bot instance is using the same token. Exiting this process.")
+            raise SystemExit(0)
         return
     logger.error(f"Ошибка: {err}")
 
