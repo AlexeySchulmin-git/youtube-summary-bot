@@ -1,6 +1,7 @@
 import logging
 import re
 import requests
+import time
 from telegram import Update
 from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -16,6 +17,8 @@ from config import (
 from quality_agent import get_quality_guidelines_text
 
 logger = logging.getLogger(__name__)
+_YTA_BACKOFF_UNTIL = 0.0
+_SUPADATA_BACKOFF_UNTIL = 0.0
 
 
 def get_video_id(url: str) -> str:
@@ -243,6 +246,13 @@ def generate_ai_title(transcript: str, summary_markdown: str, fallback_title: st
 
 
 def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
+    global _YTA_BACKOFF_UNTIL
+
+    now = time.time()
+    if now < _YTA_BACKOFF_UNTIL:
+        logger.warning("youtube-transcript-api is in cooldown after 429; skipping request")
+        return None
+
     preferred_langs = ["ru", "uk", "en", "en-US", "en-GB"]
 
     def _join_items(items) -> str:
@@ -266,7 +276,12 @@ def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
         if text:
             return text
     except Exception as exc:
-        logger.warning(f"youtube-transcript-api fast path failed: {exc}")
+        msg = str(exc)
+        if "Too Many Requests" in msg or "429" in msg:
+            _YTA_BACKOFF_UNTIL = time.time() + 180
+            logger.warning("youtube-transcript-api rate limited (429). Cooldown for 180s.")
+        else:
+            logger.warning(f"youtube-transcript-api fast path failed: {exc}")
 
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
@@ -306,12 +321,24 @@ def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:
                         continue
 
     except Exception as exc:
-        logger.warning(f"youtube-transcript-api fallback failed: {exc}")
+        msg = str(exc)
+        if "Too Many Requests" in msg or "429" in msg:
+            _YTA_BACKOFF_UNTIL = time.time() + 180
+            logger.warning("youtube-transcript-api fallback rate limited (429). Cooldown for 180s.")
+        else:
+            logger.warning(f"youtube-transcript-api fallback failed: {exc}")
 
     return None
 
 
 def get_transcript_from_supadata(video_id: str) -> str | None:
+    global _SUPADATA_BACKOFF_UNTIL
+
+    now = time.time()
+    if now < _SUPADATA_BACKOFF_UNTIL:
+        logger.warning("SUPADATA is in cooldown after rate-limit; skipping request")
+        return None
+
     if not SUPADATA_API_KEY:
         logger.warning("SUPADATA_API_KEY is not set")
         return None
@@ -321,6 +348,10 @@ def get_transcript_from_supadata(video_id: str) -> str | None:
         headers = {"x-api-key": SUPADATA_API_KEY}
         params = {"videoId": video_id, "text": True}
         response = requests.get(url, headers=headers, params=params, timeout=30)
+        if response.status_code == 429:
+            _SUPADATA_BACKOFF_UNTIL = time.time() + 120
+            logger.warning("SUPADATA rate limited (429). Cooldown for 120s.")
+            return None
         if response.status_code != 200:
             logger.error(f"Supadata error: {response.status_code} {response.text}")
             return None

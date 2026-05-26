@@ -23,6 +23,10 @@ from quality_agent import evaluate_and_evolve
 logger = logging.getLogger(__name__)
 _ACTIVE_USERS: set[int] = set()
 _ACTIVE_USERS_LOCK = asyncio.Lock()
+_GLOBAL_CONCURRENCY_LIMIT = 2
+_GLOBAL_WORKERS = asyncio.Semaphore(_GLOBAL_CONCURRENCY_LIMIT)
+_WAITING_COUNT = 0
+_WAITING_LOCK = asyncio.Lock()
 
 
 class BotProcessLock:
@@ -160,7 +164,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _ACTIVE_USERS.add(user_id)
 
     try:
-        progress_msg = await update.message.reply_text("⏳ Загружаю текст...")
+        worker_acquired = False
+        queue_position = 1
+        async with _WAITING_LOCK:
+            global _WAITING_COUNT
+            _WAITING_COUNT += 1
+            queue_position = _WAITING_COUNT
+
+        progress_msg = await update.message.reply_text(
+            f"⏳ Ожидание очереди: позиция {queue_position}."
+        )
+
+        await _GLOBAL_WORKERS.acquire()
+        worker_acquired = True
+        async with _WAITING_LOCK:
+            _WAITING_COUNT = max(0, _WAITING_COUNT - 1)
+
+        await progress_msg.edit_text("⏳ Загружаю текст...")
 
         try:
             video_id = get_video_id(text)
@@ -198,7 +218,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await progress_msg.delete()
             except Exception:
                 pass
-            return await update.message.reply_text("😕 Субтитры не найдены для этого видео.")
+            return await update.message.reply_text(
+                "😕 Не удалось получить текст видео сейчас. Возможен временный лимит источников (429). Попробуй через 2–3 минуты."
+            )
 
         video_title = get_video_title(text)
 
@@ -264,6 +286,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка summarize: {exc}")
         return await update.message.reply_text("Ошибка при анализе. Попробуй ещё раз.")
     finally:
+        if 'worker_acquired' in locals() and worker_acquired:
+            try:
+                _GLOBAL_WORKERS.release()
+            except Exception:
+                pass
         if user_id is not None:
             async with _ACTIVE_USERS_LOCK:
                 _ACTIVE_USERS.discard(user_id)
@@ -273,6 +300,10 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     err = context.error
     if isinstance(err, Conflict):
         logger.warning("Conflict in getUpdates: another bot instance is using the same token.")
+        try:
+            await context.application.stop()
+        except Exception:
+            pass
         return
     logger.error(f"Ошибка: {err}")
 
