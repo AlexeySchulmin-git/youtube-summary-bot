@@ -45,6 +45,7 @@ def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Мои конспекты</title>
+        <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232563eb'/%3E%3Cpath d='M22 20h6l6 16 6-16h6l-10 24h-4z' fill='white'/%3E%3C/svg%3E">
         <style>
           :root {{
             --bg: #f3f4f6;
