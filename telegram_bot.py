@@ -74,10 +74,12 @@ class BotProcessLock:
             logger.warning(f"Failed to release bot process lock: {exc}")
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [["📚 Мои конспекты"], ["📖 Справка"]],
+    [["📚 Мои конспекты"], ["🔎 Поиск YouTube"], ["📖 Справка"]],
     resize_keyboard=True,
     is_persistent=True,
 )
+
+SEARCH_MENU_TEXT = "🔎 Поиск YouTube"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,7 +120,8 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = " ".join(context.args).strip() if context.args else ""
     if not query:
-        return await update.message.reply_text("Использование: /search <что найти на YouTube>")
+        context.user_data["awaiting_search_query"] = True
+        return await update.message.reply_text("Напиши поисковый запрос для YouTube.")
 
     try:
         result = search_youtube_videos(query, page_token=None, max_results=5)
@@ -170,66 +173,19 @@ async def search_generate_callback(update: Update, context: ContextTypes.DEFAULT
     fake_url = f"https://www.youtube.com/watch?v={video_id}"
     if query.message:
         await query.message.reply_text(f"Принято, обрабатываю: {fake_url}")
-
-    # route through existing text handler logic by sending guidance
-    if query.message:
-        update.message = query.message
-        update.message.text = fake_url
-    await handle_message(update, context)
+    await _process_video_request(update, context, fake_url)
 
 
-async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-
-    await query.answer("Спасибо за оценку!")
-    data = query.data or ""
-    parts = data.split(":")
-    if len(parts) != 3 or parts[0] != "fb":
-        return
-
-    summary_id, rating_raw = parts[1], parts[2]
-    try:
-        rating = max(1, min(5, int(rating_raw)))
-    except Exception:
-        return
-
-    save_feedback_to_supabase(update, summary_id, rating)
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception as exc:
-        logger.warning(f"Feedback markup edit failed: {exc}")
-    if query.message:
-        await query.message.reply_text(f"Спасибо! Вы оценили конспект на {rating}/5 ✅")
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip() if update.message and update.message.text else ""
+async def _process_video_request(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id if update.effective_user else None
-
-    if text == "📚 Мои конспекты":
-        return await my_summaries(update, context)
-
-    if text == "📖 Справка":
-        return await update.message.reply_text(
-            "Я делаю конспекты YouTube-видео по ссылке.\n"
-            "Дополнительно можно искать ролики командой /search <запрос>.\n"
-            "1) Получаю субтитры\n"
-            "2) Разбиваю на чанки\n"
-            "3) Собираю итоговый конспект\n"
-            "4) Сохраняю в твою историю\n\n"
-            "Нажми «📚 Мои конспекты», чтобы открыть список.",
-            reply_markup=MAIN_MENU,
-        )
-
-    if "youtube.com" not in text and "youtu.be" not in text:
-        return await update.message.reply_text("Пожалуйста, отправь ссылку на YouTube видео.")
 
     if user_id is not None:
         async with _ACTIVE_USERS_LOCK:
             if user_id in _ACTIVE_USERS:
-                return await update.message.reply_text("⏳ Уже обрабатываю предыдущее видео. Дождись завершения.")
+                target = update.effective_message
+                if target:
+                    await target.reply_text("⏳ Уже обрабатываю предыдущее видео. Дождись завершения.")
+                return
             _ACTIVE_USERS.add(user_id)
 
     try:
@@ -240,7 +196,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _WAITING_COUNT += 1
             queue_position = _WAITING_COUNT
 
-        progress_msg = await update.message.reply_text(
+        target = update.effective_message
+        if not target:
+            return
+
+        progress_msg = await target.reply_text(
             f"⏳ Ожидание очереди: позиция {queue_position}."
         )
 
@@ -254,7 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             video_id = get_video_id(text)
         except ValueError:
-            return await update.message.reply_text("Не могу найти ID видео. Проверь ссылку.")
+            return await target.reply_text("Не могу найти ID видео. Проверь ссылку.")
 
         saved = get_saved_summary_for_user(update, video_id)
         if saved:
@@ -262,11 +222,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await progress_msg.delete()
             except Exception:
                 pass
-            await update.message.reply_text(
+            await target.reply_text(
                 "📌 Этот ролик уже сохранён в твоих конспектах. Вот существующий конспект:",
                 parse_mode="Markdown",
             )
-            await update.message.reply_text(saved.get("summary_markdown", ""), parse_mode="Markdown")
+            await target.reply_text(saved.get("summary_markdown", ""), parse_mode="Markdown")
             summary_id = saved.get("id")
             if summary_id:
                 keyboard = InlineKeyboardMarkup(
@@ -278,7 +238,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         InlineKeyboardButton("5", callback_data=f"fb:{summary_id}:5"),
                     ]]
                 )
-                return await update.message.reply_text("Оцени конспект:", reply_markup=keyboard)
+                return await target.reply_text("Оцени конспект:", reply_markup=keyboard)
             return
 
         transcript, source = get_transcript(video_id)
@@ -287,7 +247,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await progress_msg.delete()
             except Exception:
                 pass
-            return await update.message.reply_text(
+            return await target.reply_text(
                 "😕 Не удалось получить текст видео сейчас. Возможен временный лимит источников (429). Попробуй через 2–3 минуты."
             )
 
@@ -300,7 +260,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await progress_msg.delete()
             except Exception:
                 pass
-            return await update.message.reply_text("Ошибка при обработке текста. Попробуй ещё раз.")
+            return await target.reply_text("Ошибка при обработке текста. Попробуй ещё раз.")
 
         total = len(chunks)
         analyses: list[str] = []
@@ -315,7 +275,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chunk_count = total
         ai_title = generate_ai_title(transcript, summary, fallback_title=video_title)
 
-        await update.message.reply_text(summary, parse_mode="Markdown")
+        await target.reply_text(summary, parse_mode="Markdown")
         try:
             await progress_msg.delete()
         except Exception:
@@ -350,10 +310,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         InlineKeyboardButton("5", callback_data=f"fb:{summary_id}:5"),
                     ]]
                 )
-                return await update.message.reply_text("Оцени конспект:", reply_markup=keyboard)
+                return await target.reply_text("Оцени конспект:", reply_markup=keyboard)
     except Exception as exc:
         logger.error(f"Ошибка summarize: {exc}")
-        return await update.message.reply_text("Ошибка при анализе. Попробуй ещё раз.")
+        target = update.effective_message
+        if target:
+            return await target.reply_text("Ошибка при анализе. Попробуй ещё раз.")
     finally:
         if 'worker_acquired' in locals() and worker_acquired:
             try:
@@ -363,6 +325,93 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id is not None:
             async with _ACTIVE_USERS_LOCK:
                 _ACTIVE_USERS.discard(user_id)
+
+
+async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    await query.answer("Спасибо за оценку!")
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "fb":
+        return
+
+    summary_id, rating_raw = parts[1], parts[2]
+    try:
+        rating = max(1, min(5, int(rating_raw)))
+    except Exception:
+        return
+
+    save_feedback_to_supabase(update, summary_id, rating)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as exc:
+        logger.warning(f"Feedback markup edit failed: {exc}")
+    if query.message:
+        await query.message.reply_text(f"Спасибо! Вы оценили конспект на {rating}/5 ✅")
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip() if update.message and update.message.text else ""
+
+    if text == "📚 Мои конспекты":
+        return await my_summaries(update, context)
+
+    if text == SEARCH_MENU_TEXT:
+        context.user_data["awaiting_search_query"] = True
+        return await update.message.reply_text("Напиши поисковый запрос для YouTube.")
+
+    if text == "📖 Справка":
+        context.user_data.pop("awaiting_search_query", None)
+        return await update.message.reply_text(
+            "Я делаю конспекты YouTube-видео по ссылке.\n"
+            "1) Получаю субтитры\n"
+            "2) Разбиваю на чанки\n"
+            "3) Собираю итоговый конспект\n"
+            "4) Сохраняю в твою историю\n"
+            "5) Могу найти видео, команда /search или пункт в меню.\n\n"
+            "Нажми «📚 Мои конспекты», чтобы открыть список.",
+            reply_markup=MAIN_MENU,
+        )
+
+    if context.user_data.get("awaiting_search_query"):
+        context.user_data["awaiting_search_query"] = False
+        query = text.strip()
+        if not query:
+            return await update.message.reply_text("Пустой запрос. Введи текст для поиска.")
+        try:
+            result = search_youtube_videos(query, page_token=None, max_results=5)
+        except Exception as exc:
+            logger.warning(f"YouTube search failed: {exc}")
+            return await update.message.reply_text("Поиск временно недоступен. Проверь YOUTUBE_API_KEY и попробуй позже.")
+
+        items = result.get("items") or []
+        if not items:
+            return await update.message.reply_text("Ничего не найдено. Попробуй изменить запрос.")
+
+        await update.message.reply_text(f"🔎 Результаты по запросу: {query}")
+        for i, item in enumerate(items, start=1):
+            title = item.get("title") or "Без названия"
+            channel = item.get("channel") or "Неизвестный канал"
+            published = (item.get("published_at") or "")[:10]
+            url = item.get("url") or ""
+            video_id = item.get("video_id") or ""
+
+            kb = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("📝 Сделать конспект", callback_data=f"sg:{video_id}")]]
+            )
+            await update.message.reply_text(
+                f"{i}. {title}\n👤 {channel}\n📅 {published}\n{url}",
+                reply_markup=kb,
+            )
+        return
+
+    if "youtube.com" not in text and "youtu.be" not in text:
+        return await update.message.reply_text("Пожалуйста, отправь ссылку на YouTube видео.")
+
+    return await _process_video_request(update, context, text)
 
 
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
