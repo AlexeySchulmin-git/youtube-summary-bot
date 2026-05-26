@@ -12,6 +12,7 @@ from config import (
     ANALYST_MODEL_LARGE,
     SYNTHESIZER_MODEL,
     SUPADATA_API_KEY,
+    YOUTUBE_API_KEY,
     SUPABASE,
 )
 from quality_agent import get_quality_guidelines_text
@@ -19,6 +20,71 @@ from quality_agent import get_quality_guidelines_text
 logger = logging.getLogger(__name__)
 _YTA_BACKOFF_UNTIL = 0.0
 _SUPADATA_BACKOFF_UNTIL = 0.0
+_YT_SEARCH_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def search_youtube_videos(query: str, page_token: str | None = None, max_results: int = 5) -> dict:
+    """Search videos via YouTube Data API v3 search.list.
+
+    Returns dict with keys: items(list), next_page_token(str|None), prev_page_token(str|None)
+    """
+    if not YOUTUBE_API_KEY:
+        raise RuntimeError("YOUTUBE_API_KEY is not set")
+
+    q = (query or "").strip()
+    if not q:
+        return {"items": [], "next_page_token": None, "prev_page_token": None}
+
+    token = page_token or ""
+    cache_key = f"{q.lower()}::{token}::{max_results}"
+    now = time.time()
+    cached = _YT_SEARCH_CACHE.get(cache_key)
+    if cached and now - cached[0] < 900:
+        return cached[1]
+
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "key": YOUTUBE_API_KEY,
+        "part": "snippet",
+        "type": "video",
+        "q": q,
+        "maxResults": max(1, min(10, int(max_results))),
+        "safeSearch": "moderate",
+        "relevanceLanguage": "ru",
+        "order": "relevance",
+    }
+    if token:
+        params["pageToken"] = token
+
+    response = requests.get(url, params=params, timeout=25)
+    if response.status_code != 200:
+        raise RuntimeError(f"YouTube search failed: {response.status_code} {response.text}")
+
+    data = response.json() if response.content else {}
+    items_raw = data.get("items") if isinstance(data, dict) else []
+    items = []
+    for it in items_raw or []:
+        vid = (((it or {}).get("id") or {}).get("videoId") or "").strip()
+        sn = (it or {}).get("snippet") or {}
+        if not vid:
+            continue
+        items.append(
+            {
+                "video_id": vid,
+                "title": (sn.get("title") or "").strip(),
+                "channel": (sn.get("channelTitle") or "").strip(),
+                "published_at": (sn.get("publishedAt") or "").strip(),
+                "url": f"https://www.youtube.com/watch?v={vid}",
+            }
+        )
+
+    result = {
+        "items": items,
+        "next_page_token": data.get("nextPageToken") if isinstance(data, dict) else None,
+        "prev_page_token": data.get("prevPageToken") if isinstance(data, dict) else None,
+    }
+    _YT_SEARCH_CACHE[cache_key] = (now, result)
+    return result
 
 
 def get_video_id(url: str) -> str:

@@ -10,6 +10,7 @@ from services import (
     get_video_id,
     get_video_title,
     generate_ai_title,
+    search_youtube_videos,
     get_saved_summary_for_user,
     get_transcript,
     chunk_transcript,
@@ -111,6 +112,72 @@ async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Не удалось загрузить историю.")
 
 
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    query = " ".join(context.args).strip() if context.args else ""
+    if not query:
+        return await update.message.reply_text("Использование: /search <что найти на YouTube>")
+
+    try:
+        result = search_youtube_videos(query, page_token=None, max_results=5)
+    except Exception as exc:
+        logger.warning(f"YouTube search failed: {exc}")
+        return await update.message.reply_text("Поиск временно недоступен. Проверь YOUTUBE_API_KEY и попробуй позже.")
+
+    items = result.get("items") or []
+    if not items:
+        return await update.message.reply_text("Ничего не найдено. Попробуй изменить запрос.")
+
+    await update.message.reply_text(f"🔎 Результаты по запросу: {query}")
+    for i, item in enumerate(items, start=1):
+        title = item.get("title") or "Без названия"
+        channel = item.get("channel") or "Неизвестный канал"
+        published = (item.get("published_at") or "")[:10]
+        url = item.get("url") or ""
+        video_id = item.get("video_id") or ""
+
+        kb = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📝 Сделать конспект", callback_data=f"sg:{video_id}")]]
+        )
+        await update.message.reply_text(
+            f"{i}. {title}\n👤 {channel}\n📅 {published}\n{url}",
+            reply_markup=kb,
+        )
+
+
+async def search_generate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    data = query.data or ""
+    parts = data.split(":", 1)
+    if len(parts) != 2 or parts[0] != "sg":
+        return
+
+    video_id = parts[1].strip()
+    if not video_id:
+        return
+
+    await query.answer("Запускаю конспект...")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    fake_url = f"https://www.youtube.com/watch?v={video_id}"
+    if query.message:
+        await query.message.reply_text(f"Принято, обрабатываю: {fake_url}")
+
+    # route through existing text handler logic by sending guidance
+    if query.message:
+        update.message = query.message
+        update.message.text = fake_url
+    await handle_message(update, context)
+
+
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -147,6 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "📖 Справка":
         return await update.message.reply_text(
             "Я делаю конспекты YouTube-видео по ссылке.\n"
+            "Дополнительно можно искать ролики командой /search <запрос>.\n"
             "1) Получаю субтитры\n"
             "2) Разбиваю на чанки\n"
             "3) Собираю итоговый конспект\n"
@@ -321,7 +389,9 @@ def create_application():
     )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("my", my_summaries))
+    app.add_handler(CommandHandler("search", search_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(search_generate_callback, pattern=r"^sg:"))
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^fb:"))
     app.add_error_handler(error_handler)
     return app
