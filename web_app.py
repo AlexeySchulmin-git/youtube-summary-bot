@@ -15,19 +15,29 @@ def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
     for row in rows:
         url = escape(row.get("video_url") or "")
         created = escape((row.get("created_at") or "").replace("T", " ")[:19])
+        ai_title = escape(row.get("ai_title") or "")
+        user_rating = row.get("user_rating")
         raw_summary = row.get("summary_markdown") or ""
         preview_html = summary_preview_html(raw_summary)
         summary_markdown = raw_summary.replace("✅ **Кому это важно**", "🧭 **Вывод**")
         summary_html = markdown_to_html(summary_markdown)
 
+        rating_html = ""
+        if user_rating is not None:
+            rating_html = f'<div class="rating-badge">Вы оценили конспект на {escape(str(user_rating))}/5</div>'
+
+        title_html = f'<div class="ai-title">{ai_title}</div>' if ai_title else ""
+
         items_html += f"""
         <details class="card">
           <summary class="card-summary">
+            {title_html}
             <div class="card-meta">
               <span class="meta-date">🕒 {created}</span>
               <a class="video-link" href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>
             </div>
             <div class="card-preview">{preview_html}</div>
+            {rating_html}
           </summary>
           <div class="card-body">{summary_html}</div>
         </details>
@@ -98,11 +108,13 @@ def _render_summaries_page(telegram_user_id: int, rows: list[dict]) -> str:
           .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }}
           summary.card-summary {{ list-style: none; cursor: pointer; padding: 16px 18px; background: #fff; }}
           summary.card-summary::-webkit-details-marker {{ display: none; }}
+          .ai-title {{ font-size: 1.03rem; font-weight: 800; color: #0f172a; margin-bottom: 8px; line-height: 1.35; }}
           .card-meta {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }}
           .meta-date {{ color: var(--muted); font-size: 0.9rem; }}
           .video-link {{ font-size: 0.95rem; font-weight: 600; color: #1d4ed8; word-break: break-all; }}
           .card-preview {{ margin-top: 10px; color: #334155; line-height: 1.65; min-height: 36px; font-size: calc(0.95rem + 2px); }}
           .preview-title {{ font-weight: 700; color: #0f172a; margin-right: 6px; }}
+          .rating-badge {{ margin-top: 10px; display: inline-block; background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; padding: 4px 8px; border-radius: 999px; font-size: 0.82rem; font-weight: 600; }}
           .card-body {{ padding: 16px 18px 18px; border-top: 1px solid var(--border); background: var(--panel-soft); }}
           .card-body p {{ margin: 0 0 14px; line-height: 1.8; }}
           .card-body ul {{ margin: 0 0 14px 20px; padding: 0; }}
@@ -172,13 +184,44 @@ def user_summaries_page(telegram_user_id: int):
         user_id = profile_resp.data[0]["id"]
         summaries_resp = (
             SUPABASE.table("summaries")
-            .select("video_url, summary_markdown, created_at")
+          .select("id, video_url, summary_markdown, created_at, ai_title")
             .eq("user_id", user_id)
             .order("created_at", desc=True)
             .limit(30)
             .execute()
         )
         rows = summaries_resp.data or []
+
+        if rows:
+          summary_ids = [r.get("id") for r in rows if r.get("id")]
+          rating_map: dict[str, int] = {}
+          if summary_ids:
+            try:
+              fb_resp = (
+                SUPABASE.table("summary_feedback")
+                .select("summary_id, rating, liked")
+                .eq("user_id", user_id)
+                .in_("summary_id", summary_ids)
+                .execute()
+              )
+              for fb in fb_resp.data or []:
+                sid = fb.get("summary_id")
+                rating = fb.get("rating")
+                if rating is None:
+                  liked = fb.get("liked")
+                  rating = 5 if liked else 2 if liked is not None else None
+                if sid and rating is not None:
+                  try:
+                    rating_map[sid] = int(rating)
+                  except Exception:
+                    pass
+            except Exception as exc:
+              logger.warning(f"Feedback load failed: {exc}")
+
+          for r in rows:
+            sid = r.get("id")
+            r["user_rating"] = rating_map.get(sid)
+
         return _render_summaries_page(telegram_user_id, rows)
     except Exception as exc:
         logger.warning(f"Summaries page failed: {exc}")

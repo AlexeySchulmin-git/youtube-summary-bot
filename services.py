@@ -98,7 +98,7 @@ def get_saved_summary_for_user(update: Update, video_id: str) -> dict | None:
     try:
         summary_resp = (
             SUPABASE.table("summaries")
-            .select("id, summary_markdown")
+            .select("id, summary_markdown, video_url")
             .eq("user_id", user_id)
             .eq("video_id", video_id)
             .limit(1)
@@ -111,7 +111,15 @@ def get_saved_summary_for_user(update: Update, video_id: str) -> dict | None:
     return None
 
 
-def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summary: str, chunk_count: int, transcript_source: str) -> str | None:
+def save_summary_to_supabase(
+    update: Update,
+    video_id: str,
+    video_url: str,
+    summary: str,
+    chunk_count: int,
+    transcript_source: str,
+    ai_title: str | None = None,
+) -> str | None:
     user_id = _get_or_create_user_id(update)
     if not SUPABASE or not user_id:
         return None
@@ -139,7 +147,19 @@ def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summ
             "model_analyst_large": ANALYST_MODEL_LARGE,
             "model_synthesizer": SYNTHESIZER_MODEL,
         }
-        summary_resp = SUPABASE.table("summaries").insert(summary_payload).execute()
+        if ai_title:
+            summary_payload["ai_title"] = ai_title
+
+        try:
+            summary_resp = SUPABASE.table("summaries").insert(summary_payload).execute()
+        except Exception as exc:
+            if "ai_title" in summary_payload:
+                logger.warning(f"Supabase save with ai_title failed, retry without ai_title: {exc}")
+                summary_payload.pop("ai_title", None)
+                summary_resp = SUPABASE.table("summaries").insert(summary_payload).execute()
+            else:
+                raise
+
         if summary_resp.data and len(summary_resp.data) > 0:
             return summary_resp.data[0].get("id")
     except Exception as exc:
@@ -147,7 +167,7 @@ def save_summary_to_supabase(update: Update, video_id: str, video_url: str, summ
     return None
 
 
-def save_feedback_to_supabase(update: Update, summary_id: str, liked: bool):
+def save_feedback_to_supabase(update: Update, summary_id: str, rating: int):
     if not SUPABASE or not update.effective_user:
         return
 
@@ -164,14 +184,62 @@ def save_feedback_to_supabase(update: Update, summary_id: str, liked: bool):
             return
 
         user_id = profile_resp.data[0]["id"]
+        rating = max(1, min(5, int(rating)))
         payload = {
             "summary_id": summary_id,
             "user_id": user_id,
-            "liked": liked,
+            "rating": rating,
         }
-        SUPABASE.table("summary_feedback").upsert(payload, on_conflict="summary_id,user_id").execute()
+        try:
+            SUPABASE.table("summary_feedback").upsert(payload, on_conflict="summary_id,user_id").execute()
+        except Exception as exc:
+            logger.warning(f"Supabase rating save failed, fallback to liked: {exc}")
+            fallback_payload = {
+                "summary_id": summary_id,
+                "user_id": user_id,
+                "liked": rating >= 4,
+            }
+            SUPABASE.table("summary_feedback").upsert(fallback_payload, on_conflict="summary_id,user_id").execute()
     except Exception as exc:
         logger.warning(f"Supabase feedback save failed: {exc}")
+
+
+def generate_ai_title(transcript: str, summary_markdown: str, fallback_title: str | None = None) -> str:
+    fallback = (fallback_title or "Конспект видео").strip()
+
+    if not CLIENT:
+        return fallback
+
+    try:
+        transcript_short = transcript[:4000]
+        summary_short = summary_markdown[:2500]
+        response = CLIENT.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Сгенерируй короткий информативный заголовок конспекта на русском. Только одна строка, без кавычек.",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Оригинальный заголовок: {fallback}\n\n"
+                        f"Транскрипт (фрагмент):\n{transcript_short}\n\n"
+                        f"Конспект:\n{summary_short}\n\n"
+                        "Требования: 4-9 слов, конкретно и по сути."
+                    ),
+                },
+            ],
+            temperature=0.2,
+            max_tokens=40,
+        )
+        title = (response.choices[0].message.content or "").strip().strip('"')
+        if title:
+            return title[:120]
+    except Exception as exc:
+        logger.warning(f"AI title generation failed: {exc}")
+
+    return fallback
 
 
 def get_transcript_from_youtube_transcript_api(video_id: str) -> str | None:

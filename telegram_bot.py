@@ -9,6 +9,7 @@ from config import TELEGRAM_TOKEN, WEB_APP_BASE_URL, BOT_PROCESS_LOCK_PATH
 from services import (
     get_video_id,
     get_video_title,
+    generate_ai_title,
     get_saved_summary_for_user,
     get_transcript,
     chunk_transcript,
@@ -116,15 +117,19 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) != 3 or parts[0] != "fb":
         return
 
-    summary_id, vote = parts[1], parts[2]
-    liked = vote == "up"
-    save_feedback_to_supabase(update, summary_id, liked)
+    summary_id, rating_raw = parts[1], parts[2]
+    try:
+        rating = max(1, min(5, int(rating_raw)))
+    except Exception:
+        return
+
+    save_feedback_to_supabase(update, summary_id, rating)
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception as exc:
         logger.warning(f"Feedback markup edit failed: {exc}")
     if query.message:
-        await query.message.reply_text("Спасибо за оценку! ✅")
+        await query.message.reply_text(f"Спасибо! Вы оценили конспект на {rating}/5 ✅")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -155,7 +160,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _ACTIVE_USERS.add(user_id)
 
     try:
-        await update.message.reply_text("⏳ Загружаю текст...")
+        progress_msg = await update.message.reply_text("⏳ Загружаю текст...")
 
         try:
             video_id = get_video_id(text)
@@ -164,26 +169,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         saved = get_saved_summary_for_user(update, video_id)
         if saved:
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
             await update.message.reply_text(
                 "📌 Этот ролик уже сохранён в твоих конспектах. Вот существующий конспект:",
                 parse_mode="Markdown",
             )
-            return await update.message.reply_text(saved.get("summary_markdown", ""), parse_mode="Markdown")
+            await update.message.reply_text(saved.get("summary_markdown", ""), parse_mode="Markdown")
+            summary_id = saved.get("id")
+            if summary_id:
+                keyboard = InlineKeyboardMarkup(
+                    [[
+                        InlineKeyboardButton("1", callback_data=f"fb:{summary_id}:1"),
+                        InlineKeyboardButton("2", callback_data=f"fb:{summary_id}:2"),
+                        InlineKeyboardButton("3", callback_data=f"fb:{summary_id}:3"),
+                        InlineKeyboardButton("4", callback_data=f"fb:{summary_id}:4"),
+                        InlineKeyboardButton("5", callback_data=f"fb:{summary_id}:5"),
+                    ]]
+                )
+                return await update.message.reply_text("Оцени конспект:", reply_markup=keyboard)
+            return
 
         transcript, source = get_transcript(video_id)
         if not transcript or len(transcript) < 100:
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
             return await update.message.reply_text("😕 Субтитры не найдены для этого видео.")
 
         video_title = get_video_title(text)
 
-        await update.message.reply_text("🧩 Разбиваю текст на части...")
+        await progress_msg.edit_text("🧩 Разбиваю текст на части...")
         chunks = chunk_transcript(transcript, target_tokens=2500, max_tokens=3000, overlap_tokens=200)
         if not chunks:
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
             return await update.message.reply_text("Ошибка при обработке текста. Попробуй ещё раз.")
 
         total = len(chunks)
         analyses: list[str] = []
-        progress_msg = await update.message.reply_text(f"🤖 Анализирую содержание: 0/{total}")
+        await progress_msg.edit_text(f"🤖 Анализирую содержание: 0/{total}")
 
         for idx, chunk in enumerate(chunks, start=1):
             await progress_msg.edit_text(f"🤖 Анализирую содержание: {idx}/{total}")
@@ -192,9 +222,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await progress_msg.edit_text("🧠 Собираю итоговый конспект...")
         summary = synthesize_analyses(analyses, video_title=video_title)
         chunk_count = total
+        ai_title = generate_ai_title(transcript, summary, fallback_title=video_title)
 
         await update.message.reply_text(summary, parse_mode="Markdown")
-        await progress_msg.edit_text("✅ Конспект готов")
+        try:
+            await progress_msg.delete()
+        except Exception:
+            pass
 
         try:
             quality_result = evaluate_and_evolve(video_id=video_id, transcript=transcript, summary=summary)
@@ -206,12 +240,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Quality evaluation failed: {q_exc}")
 
         if source:
-            summary_id = save_summary_to_supabase(update, video_id, text, summary, chunk_count, source)
+            summary_id = save_summary_to_supabase(
+                update,
+                video_id,
+                text,
+                summary,
+                chunk_count,
+                source,
+                ai_title=ai_title,
+            )
             if summary_id:
                 keyboard = InlineKeyboardMarkup(
                     [[
-                        InlineKeyboardButton("👍 Полезно", callback_data=f"fb:{summary_id}:up"),
-                        InlineKeyboardButton("👎 Слабо", callback_data=f"fb:{summary_id}:down"),
+                        InlineKeyboardButton("1", callback_data=f"fb:{summary_id}:1"),
+                        InlineKeyboardButton("2", callback_data=f"fb:{summary_id}:2"),
+                        InlineKeyboardButton("3", callback_data=f"fb:{summary_id}:3"),
+                        InlineKeyboardButton("4", callback_data=f"fb:{summary_id}:4"),
+                        InlineKeyboardButton("5", callback_data=f"fb:{summary_id}:5"),
                     ]]
                 )
                 return await update.message.reply_text("Оцени конспект:", reply_markup=keyboard)
