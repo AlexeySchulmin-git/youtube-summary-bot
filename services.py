@@ -83,12 +83,14 @@ def get_youtube_query_suggestions(query: str, limit: int = 5) -> list[str]:
     if not q:
         return []
     try:
+        logger.info(f"YT suggest request: query='{q}'")
         resp = requests.get(
             "https://suggestqueries.google.com/complete/search",
             params={"client": "firefox", "ds": "yt", "q": q},
             timeout=15,
         )
         if resp.status_code != 200:
+            logger.warning(f"YT suggest failed: status={resp.status_code}, query='{q}'")
             return []
         data = resp.json() if resp.content else []
         suggestions = data[1] if isinstance(data, list) and len(data) > 1 and isinstance(data[1], list) else []
@@ -104,8 +106,10 @@ def get_youtube_query_suggestions(query: str, limit: int = 5) -> list[str]:
                 clean.append(text)
             if len(clean) >= max(1, min(10, int(limit))):
                 break
+        logger.info(f"YT suggest response: query='{q}', count={len(clean)}, items={clean}")
         return clean
     except Exception:
+        logger.exception(f"YT suggest exception for query='{q}'")
         return []
 
 
@@ -670,7 +674,7 @@ def synthesize_analyses(analyses: list[str], video_title: str | None = None) -> 
 
 🎯 **Краткое резюме** (ровно 3 предложения)
 
-📌 **Важные вещи** (5-8 пунктов, каждый пункт должен начинаться с символа ◾)
+⚡**Ключевые моменты** (1-4 пункта, каждый пункт должен начинаться с символа ◾; пункты должны быть уникальными и не повторять друг друга)
 
 🧭 **Вывод** (1-2 предложения: итог и зачем это важно в контексте темы; не повторяй формулировки из резюме)
 

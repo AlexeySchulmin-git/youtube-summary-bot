@@ -1,7 +1,7 @@
 import logging
 import os
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.error import Conflict
 
@@ -100,7 +100,15 @@ async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page_url = f"{page_base}/u/{user.id}" if page_base else None
 
         if page_url:
-            return await update.message.reply_text(page_url, reply_markup=MAIN_MENU)
+            web_keyboard = ReplyKeyboardMarkup(
+                [[KeyboardButton(text="📚 Открыть мои конспекты", web_app=WebAppInfo(url=page_url))], [KeyboardButton(text="↩ Назад")]],
+                resize_keyboard=True,
+                is_persistent=False,
+            )
+            return await update.message.reply_text(
+                "Открой страницу конспектов кнопкой ниже:",
+                reply_markup=web_keyboard,
+            )
 
         return await update.message.reply_text(
             "Укажи WEB_APP_BASE_URL, чтобы открывать страницу конспектов.",
@@ -361,6 +369,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_search_query"] = True
         return await update.message.reply_text("Напиши поисковый запрос для YouTube (можно неполный, покажу подсказки).")
 
+    if text == "↩ Назад":
+        context.user_data.pop("awaiting_search_query", None)
+        return await update.message.reply_text("Главное меню", reply_markup=MAIN_MENU)
+
     if text == "📖 Справка":
         context.user_data.pop("awaiting_search_query", None)
         return await update.message.reply_text(
@@ -379,19 +391,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not query:
             return await update.message.reply_text("Пустой запрос. Введи текст для поиска.")
 
-        if len(query) < 4:
-            suggestions = get_youtube_query_suggestions(query, limit=5)
-            if suggestions:
-                kb_rows = [
-                    [InlineKeyboardButton(s[:64], callback_data=f"sq:{idx}")]
-                    for idx, s in enumerate(suggestions)
-                ]
-                context.user_data["search_suggestions"] = suggestions
-                context.user_data["awaiting_search_query"] = False
-                return await update.message.reply_text(
-                    "Похожие запросы. Выбери подсказку или введи более длинный запрос:",
-                    reply_markup=InlineKeyboardMarkup(kb_rows),
-                )
+        suggestions = get_youtube_query_suggestions(query, limit=5)
+        logger.info(f"Search query received: '{query}', suggestions_count={len(suggestions)}")
+        if suggestions:
+            kb_rows = [
+                [InlineKeyboardButton(s[:64], callback_data=f"sq:{idx}")]
+                for idx, s in enumerate(suggestions)
+            ]
+            context.user_data["search_suggestions"] = suggestions
+            await update.message.reply_text(
+                "Подсказки по запросу (можно выбрать):",
+                reply_markup=InlineKeyboardMarkup(kb_rows),
+            )
+        else:
+            logger.warning(f"No suggestions returned for query='{query}'")
 
         context.user_data["awaiting_search_query"] = False
         try:

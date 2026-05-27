@@ -47,8 +47,8 @@ def _default_state() -> dict[str, Any]:
             "overall": 0.0,
         },
         "style_guidelines": [
-            "Сохраняй структуру: 🎯 Краткое резюме, 📌 Важные вещи, 🧭 Вывод.",
-            "В блоке 📌 Важные вещи используй только маркеры ◾.",
+            "Сохраняй структуру: 🎯 Краткое резюме, ⚡Ключевые моменты, 🧭 Вывод.",
+            "В блоке ⚡Ключевые моменты используй только маркеры ◾.",
             "Не добавляй факты, которых нет в транскрипте.",
         ],
         "history": [],
@@ -152,16 +152,19 @@ def _evaluate_with_llm(transcript: str, summary: str) -> dict[str, Any]:
 
 def _evaluate_structure_heuristics(summary: str) -> dict[str, Any]:
     has_brief = "🎯 **Краткое резюме**" in summary
-    has_important = "📌 **Важные вещи**" in summary
+    has_important = "⚡**Ключевые моменты**" in summary or "⚡ **Ключевые моменты**" in summary
     has_conclusion = "🧭 **Вывод**" in summary
     bullets = _extract_bullet_lines(summary)
     bad_dash_bullets = [ln for ln in summary.splitlines() if ln.strip().startswith("-")]
+    unique_bullets = len({b.lower() for b in bullets})
 
     score = 5.0
     if not (has_brief and has_important and has_conclusion):
         score -= 2.0
-    if len(bullets) < 5:
+    if len(bullets) < 1 or len(bullets) > 4:
         score -= 1.0
+    if bullets and unique_bullets < len(bullets):
+        score -= 0.5
     if bad_dash_bullets:
         score -= 1.0
 
@@ -170,6 +173,7 @@ def _evaluate_structure_heuristics(summary: str) -> dict[str, Any]:
         "has_important": has_important,
         "has_conclusion": has_conclusion,
         "bullet_count": len(bullets),
+        "unique_bullet_count": unique_bullets,
         "dash_bullet_count": len(bad_dash_bullets),
         "structure_heuristic_score": max(0.0, min(5.0, score)),
     }
@@ -186,8 +190,8 @@ def _evolve_guidelines(state: dict[str, Any], evaluation: dict[str, Any], heuris
         if s_norm not in guidelines:
             guidelines.append(s_norm)
 
-    if heuristics.get("dash_bullet_count", 0) > 0 and "В блоке 📌 Важные вещи используй только маркеры ◾." not in guidelines:
-        guidelines.append("В блоке 📌 Важные вещи используй только маркеры ◾.")
+    if heuristics.get("dash_bullet_count", 0) > 0 and "В блоке ⚡Ключевые моменты используй только маркеры ◾." not in guidelines:
+        guidelines.append("В блоке ⚡Ключевые моменты используй только маркеры ◾.")
 
     state["style_guidelines"] = guidelines[-20:]
 
@@ -205,6 +209,10 @@ def evaluate_and_evolve(video_id: str, transcript: str, summary: str) -> dict[st
     llm_eval["structure"] = round(merged_structure, 2)
     llm_eval["overall"] = round((llm_eval["coverage"] + llm_eval["faithfulness"] + llm_eval["structure"]) / 3, 2)
 
+    # Convert from 0..5 to 0..100 for stored/history/running scores
+    for metric in ("coverage", "faithfulness", "structure", "overall"):
+        llm_eval[metric] = round(llm_eval[metric] * 20.0, 2)
+
     _evolve_guidelines(state, llm_eval, heuristics)
 
     item = {
@@ -220,7 +228,7 @@ def evaluate_and_evolve(video_id: str, transcript: str, summary: str) -> dict[st
         "hallucinations": llm_eval["hallucinations"],
         "improvement_suggestions": llm_eval["improvement_suggestions"],
         "heuristics": heuristics,
-        "pass_threshold": llm_eval["overall"] >= QUALITY_MIN_OVERALL_SCORE,
+        "pass_threshold": llm_eval["overall"] >= (QUALITY_MIN_OVERALL_SCORE * 20.0 if QUALITY_MIN_OVERALL_SCORE <= 5 else QUALITY_MIN_OVERALL_SCORE),
     }
 
     history = list(state.get("history") or [])
