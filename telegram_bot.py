@@ -1,7 +1,7 @@
 import logging
 import os
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, BotCommand, MenuButtonCommands
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.error import Conflict
 
@@ -75,7 +75,7 @@ class BotProcessLock:
             logger.warning(f"Failed to release bot process lock: {exc}")
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [["📚 Мои конспекты"], ["🔎 Поиск YouTube"], ["📖 Справка"]],
+    [["📚 Мои конспекты"], ["🔎 Поиск YouTube"], ["💙 Поддержать проект"], ["📖 Справка"]],
     resize_keyboard=True,
     is_persistent=True,
 )
@@ -100,14 +100,10 @@ async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page_url = f"{page_base}/u/{user.id}" if page_base else None
 
         if page_url:
-            web_keyboard = ReplyKeyboardMarkup(
-                [[KeyboardButton(text="📚 Открыть мои конспекты", web_app=WebAppInfo(url=page_url))], [KeyboardButton(text="↩ Назад")]],
-                resize_keyboard=True,
-                is_persistent=False,
-            )
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Открыть страницу конспектов", url=page_url)]])
             return await update.message.reply_text(
-                "Открой страницу конспектов кнопкой ниже:",
-                reply_markup=web_keyboard,
+                "🗂 Твоя страница конспектов готова. Открывай:",
+                reply_markup=kb,
             )
 
         return await update.message.reply_text(
@@ -117,6 +113,21 @@ async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         logger.warning(f"My summaries failed: {exc}")
         return await update.message.reply_text("Не удалось загрузить историю.")
+
+
+async def support_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.effective_message
+    if not target:
+        return
+
+    support_url = "https://yoomoney.ru/fundraise/1HVB3RU66AC.260524"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("💙 Поддержать проект", url=support_url)]])
+    return await target.reply_text(
+        "Проект будет улучшаться дальше: новые функции, лучшее качество конспектов и удобство сервиса.\n"
+        "Для этого нужны расходы на серверы и ИИ-модели.\n"
+        "Если хотите помочь развитию — поддержите проект:",
+        reply_markup=kb,
+    )
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -369,6 +380,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_search_query"] = True
         return await update.message.reply_text("Напиши поисковый запрос для YouTube (можно неполный, покажу подсказки).")
 
+    if text == "💙 Поддержать проект":
+        return await support_project(update, context)
+
     if text == "↩ Назад":
         context.user_data.pop("awaiting_search_query", None)
         return await update.message.reply_text("Главное меню", reply_markup=MAIN_MENU)
@@ -453,6 +467,19 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {err}")
 
 
+async def _post_init(application):
+    try:
+        await application.bot.set_my_commands([
+            BotCommand("start", "Запустить бота"),
+            BotCommand("search", "Поиск видео YouTube"),
+            BotCommand("my", "Мои конспекты"),
+            BotCommand("support", "Поддержать проект"),
+        ])
+        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except Exception as exc:
+        logger.warning(f"Failed to configure bot menu: {exc}")
+
+
 async def search_suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -521,11 +548,13 @@ def create_application():
         .read_timeout(25)
         .write_timeout(25)
         .pool_timeout(15)
+        .post_init(_post_init)
         .build()
     )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("my", my_summaries))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("support", support_project))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(search_suggestion_callback, pattern=r"^sq:"))
     app.add_handler(CallbackQueryHandler(search_generate_callback, pattern=r"^sg:"))
