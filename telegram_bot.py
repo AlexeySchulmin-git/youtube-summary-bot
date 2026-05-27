@@ -11,6 +11,7 @@ from services import (
     get_video_title,
     generate_ai_title,
     search_youtube_videos,
+    get_youtube_query_suggestions,
     get_saved_summary_for_user,
     get_transcript,
     chunk_transcript,
@@ -99,11 +100,7 @@ async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page_url = f"{page_base}/u/{user.id}" if page_base else None
 
         if page_url:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Открыть страницу конспектов", url=page_url)]])
-            return await update.message.reply_text(
-                "🗂 Твоя страница конспектов готова. Открывай:",
-                reply_markup=kb,
-            )
+            return await update.message.reply_text(page_url, reply_markup=MAIN_MENU)
 
         return await update.message.reply_text(
             "Укажи WEB_APP_BASE_URL, чтобы открывать страницу конспектов.",
@@ -121,7 +118,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip() if context.args else ""
     if not query:
         context.user_data["awaiting_search_query"] = True
-        return await update.message.reply_text("Напиши поисковый запрос для YouTube.")
+        return await update.message.reply_text("Напиши поисковый запрос для YouTube (можно неполный, покажу подсказки).")
 
     try:
         result = search_youtube_videos(query, page_token=None, max_results=5)
@@ -138,6 +135,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = item.get("title") or "Без названия"
         channel = item.get("channel") or "Неизвестный канал"
         published = (item.get("published_at") or "")[:10]
+        duration = item.get("duration") or "—"
         url = item.get("url") or ""
         video_id = item.get("video_id") or ""
 
@@ -145,7 +143,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [[InlineKeyboardButton("📝 Сделать конспект", callback_data=f"sg:{video_id}")]]
         )
         await update.message.reply_text(
-            f"{i}. {title}\n👤 {channel}\n📅 {published}\n{url}",
+            f"{i}. {title}\n👤 {channel}\n⏱ {duration}\n📅 {published}\n{url}",
             reply_markup=kb,
         )
 
@@ -361,7 +359,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == SEARCH_MENU_TEXT:
         context.user_data["awaiting_search_query"] = True
-        return await update.message.reply_text("Напиши поисковый запрос для YouTube.")
+        return await update.message.reply_text("Напиши поисковый запрос для YouTube (можно неполный, покажу подсказки).")
 
     if text == "📖 Справка":
         context.user_data.pop("awaiting_search_query", None)
@@ -377,10 +375,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     if context.user_data.get("awaiting_search_query"):
-        context.user_data["awaiting_search_query"] = False
         query = text.strip()
         if not query:
             return await update.message.reply_text("Пустой запрос. Введи текст для поиска.")
+
+        if len(query) < 4:
+            suggestions = get_youtube_query_suggestions(query, limit=5)
+            if suggestions:
+                kb_rows = [
+                    [InlineKeyboardButton(s[:64], callback_data=f"sq:{idx}")]
+                    for idx, s in enumerate(suggestions)
+                ]
+                context.user_data["search_suggestions"] = suggestions
+                context.user_data["awaiting_search_query"] = False
+                return await update.message.reply_text(
+                    "Похожие запросы. Выбери подсказку или введи более длинный запрос:",
+                    reply_markup=InlineKeyboardMarkup(kb_rows),
+                )
+
+        context.user_data["awaiting_search_query"] = False
         try:
             result = search_youtube_videos(query, page_token=None, max_results=5)
         except Exception as exc:
@@ -396,6 +409,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = item.get("title") or "Без названия"
             channel = item.get("channel") or "Неизвестный канал"
             published = (item.get("published_at") or "")[:10]
+            duration = item.get("duration") or "—"
             url = item.get("url") or ""
             video_id = item.get("video_id") or ""
 
@@ -403,7 +417,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [[InlineKeyboardButton("📝 Сделать конспект", callback_data=f"sg:{video_id}")]]
             )
             await update.message.reply_text(
-                f"{i}. {title}\n👤 {channel}\n📅 {published}\n{url}",
+                f"{i}. {title}\n👤 {channel}\n⏱ {duration}\n📅 {published}\n{url}",
                 reply_markup=kb,
             )
         return
@@ -426,6 +440,66 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {err}")
 
 
+async def search_suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    data = query.data or ""
+    parts = data.split(":", 1)
+    if len(parts) != 2 or parts[0] != "sq":
+        return
+
+    try:
+        idx = int(parts[1])
+    except Exception:
+        return
+
+    suggestions = context.user_data.get("search_suggestions") or []
+    if not (0 <= idx < len(suggestions)):
+        return
+
+    selected = (suggestions[idx] or "").strip()
+    if not selected:
+        return
+
+    await query.answer(f"Выбрано: {selected}")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    try:
+        result = search_youtube_videos(selected, page_token=None, max_results=5)
+    except Exception as exc:
+        logger.warning(f"YouTube search failed from suggestion: {exc}")
+        if query.message:
+            await query.message.reply_text("Поиск временно недоступен. Проверь YOUTUBE_API_KEY и попробуй позже.")
+        return
+
+    items = result.get("items") or []
+    if query.message:
+        if not items:
+            await query.message.reply_text("Ничего не найдено. Попробуй изменить запрос.")
+            return
+
+        await query.message.reply_text(f"🔎 Результаты по запросу: {selected}")
+        for i, item in enumerate(items, start=1):
+            title = item.get("title") or "Без названия"
+            channel = item.get("channel") or "Неизвестный канал"
+            published = (item.get("published_at") or "")[:10]
+            duration = item.get("duration") or "—"
+            url = item.get("url") or ""
+            video_id = item.get("video_id") or ""
+            kb = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("📝 Сделать конспект", callback_data=f"sg:{video_id}")]]
+            )
+            await query.message.reply_text(
+                f"{i}. {title}\n👤 {channel}\n⏱ {duration}\n📅 {published}\n{url}",
+                reply_markup=kb,
+            )
+
+
 def create_application():
     app = (
         ApplicationBuilder()
@@ -440,6 +514,7 @@ def create_application():
     app.add_handler(CommandHandler("my", my_summaries))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(search_suggestion_callback, pattern=r"^sq:"))
     app.add_handler(CallbackQueryHandler(search_generate_callback, pattern=r"^sg:"))
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^fb:"))
     app.add_error_handler(error_handler)

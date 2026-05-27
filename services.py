@@ -2,6 +2,7 @@ import logging
 import re
 import requests
 import time
+from datetime import timedelta
 from telegram import Update
 from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -21,6 +22,91 @@ logger = logging.getLogger(__name__)
 _YTA_BACKOFF_UNTIL = 0.0
 _SUPADATA_BACKOFF_UNTIL = 0.0
 _YT_SEARCH_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _parse_iso8601_duration_to_text(value: str) -> str:
+    """Convert ISO8601 duration (e.g. PT1H2M9S) to human text (HH:MM:SS / MM:SS)."""
+    if not value or not isinstance(value, str):
+        return "—"
+
+    m = re.match(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", value.strip())
+    if not m:
+        return "—"
+
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2) or 0)
+    seconds = int(m.group(3) or 0)
+
+    total = int(timedelta(hours=hours, minutes=minutes, seconds=seconds).total_seconds())
+    if total <= 0:
+        return "00:00"
+
+    h = total // 3600
+    rem = total % 3600
+    mm = rem // 60
+    ss = rem % 60
+    if h > 0:
+        return f"{h:02d}:{mm:02d}:{ss:02d}"
+    return f"{mm:02d}:{ss:02d}"
+
+
+def _fetch_video_durations(video_ids: list[str]) -> dict[str, str]:
+    if not YOUTUBE_API_KEY or not video_ids:
+        return {}
+
+    unique_ids = [v for v in dict.fromkeys(video_ids) if v]
+    if not unique_ids:
+        return {}
+
+    url = "https://www.googleapis.com/youtube/v3/videos"
+    params = {
+        "key": YOUTUBE_API_KEY,
+        "part": "contentDetails",
+        "id": ",".join(unique_ids[:50]),
+    }
+    response = requests.get(url, params=params, timeout=25)
+    if response.status_code != 200:
+        return {}
+
+    data = response.json() if response.content else {}
+    out: dict[str, str] = {}
+    for it in (data.get("items") if isinstance(data, dict) else []) or []:
+        vid = (it.get("id") or "").strip()
+        iso = ((it.get("contentDetails") or {}).get("duration") or "").strip()
+        if vid:
+            out[vid] = _parse_iso8601_duration_to_text(iso)
+    return out
+
+
+def get_youtube_query_suggestions(query: str, limit: int = 5) -> list[str]:
+    q = (query or "").strip()
+    if not q:
+        return []
+    try:
+        resp = requests.get(
+            "https://suggestqueries.google.com/complete/search",
+            params={"client": "firefox", "ds": "yt", "q": q},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json() if resp.content else []
+        suggestions = data[1] if isinstance(data, list) and len(data) > 1 and isinstance(data[1], list) else []
+        clean = []
+        seen = set()
+        for s in suggestions:
+            if not isinstance(s, str):
+                continue
+            text = s.strip()
+            key = text.lower()
+            if text and key not in seen:
+                seen.add(key)
+                clean.append(text)
+            if len(clean) >= max(1, min(10, int(limit))):
+                break
+        return clean
+    except Exception:
+        return []
 
 
 def search_youtube_videos(query: str, page_token: str | None = None, max_results: int = 5) -> dict:
@@ -62,12 +148,14 @@ def search_youtube_videos(query: str, page_token: str | None = None, max_results
 
     data = response.json() if response.content else {}
     items_raw = data.get("items") if isinstance(data, dict) else []
+    video_ids: list[str] = []
     items = []
     for it in items_raw or []:
         vid = (((it or {}).get("id") or {}).get("videoId") or "").strip()
         sn = (it or {}).get("snippet") or {}
         if not vid:
             continue
+        video_ids.append(vid)
         items.append(
             {
                 "video_id": vid,
@@ -77,6 +165,11 @@ def search_youtube_videos(query: str, page_token: str | None = None, max_results
                 "url": f"https://www.youtube.com/watch?v={vid}",
             }
         )
+
+    durations = _fetch_video_durations(video_ids)
+    for item in items:
+        vid = item.get("video_id") or ""
+        item["duration"] = durations.get(vid, "—")
 
     result = {
         "items": items,
@@ -564,8 +657,10 @@ def synthesize_analyses(analyses: list[str], video_title: str | None = None) -> 
 - Если в материале есть упоминания персон, укажи их по делу в релевантных пунктах.
 - Пиши своими словами, не копируй фразы автора дословно.
 - Включай цифры, названия инструментов, конкретные примеры, если необходимо.
+- Используй максимально точные названия брендов/сервисов/терминов из материала. Пример: если речь о Wordstat, пиши именно `wordstat.yandex.ru`, а не общее "подбор слов".
 - Без вводных фраз: не начинай с "Конечно!", "Вот конспект:", "В этом видео..."
 - Сразу выдавай результат по структуре.
+- Не дублируй смысл между разделами: `🎯 Краткое резюме` = компактный обзор; `🧭 Вывод` = новый итог/применимость/ограничения, без перефраза резюме.
 
 ИГНОРИРУЙ:
 - Вступления и самопрезентации автора
@@ -577,7 +672,7 @@ def synthesize_analyses(analyses: list[str], video_title: str | None = None) -> 
 
 📌 **Важные вещи** (5-8 пунктов, каждый пункт должен начинаться с символа ◾)
 
-🧭 **Вывод** (1-2 предложения: итог и зачем это важно в контексте темы)
+🧭 **Вывод** (1-2 предложения: итог и зачем это важно в контексте темы; не повторяй формулировки из резюме)
 
 Материалы для синтеза:
 {joined}
