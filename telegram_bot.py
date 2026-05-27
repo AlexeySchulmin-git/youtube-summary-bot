@@ -75,7 +75,7 @@ class BotProcessLock:
             logger.warning(f"Failed to release bot process lock: {exc}")
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [["📚 Мои конспекты"], ["🔎 Поиск YouTube"], ["💙 Поддержать проект"], ["📖 Справка"]],
+    [["📚 Мои конспекты"], ["🔎 Поиск YouTube"], ["💡 Предложения и обратная связь"], ["💙 Поддержать проект"], ["📖 Справка"]],
     resize_keyboard=True,
     is_persistent=True,
 )
@@ -126,6 +126,26 @@ async def support_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Проект будет улучшаться дальше: новые функции, лучшее качество конспектов и удобство сервиса.\n"
         "Для этого нужны расходы на серверы и ИИ-модели.\n"
         "Если хотите помочь развитию — поддержите проект:",
+        reply_markup=kb,
+    )
+
+
+async def feedback_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.effective_message
+    if not target:
+        return
+
+    personal_contact = "https://t.me/alexeyshulmin"
+    feedback_channel = "https://t.me/notes_youtube"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✍️ Написать в личку", url=personal_contact)],
+        [InlineKeyboardButton("📢 Канал с новостями", url=feedback_channel)],
+    ])
+
+    return await target.reply_text(
+        "Есть идея или ошибка? Напишите в личку — так быстрее разберём конкретный кейс.\n"
+        "Канал лучше использовать для общих анонсов и сбора реакций.",
         reply_markup=kb,
     )
 
@@ -380,6 +400,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_search_query"] = True
         return await update.message.reply_text("Напиши поисковый запрос для YouTube (можно неполный, покажу подсказки).")
 
+    if text == "💡 Предложения и обратная связь":
+        return await feedback_entry(update, context)
+
     if text == "💙 Поддержать проект":
         return await support_project(update, context)
 
@@ -473,6 +496,7 @@ async def _post_init(application):
             BotCommand("start", "Запустить бота"),
             BotCommand("search", "Поиск видео YouTube"),
             BotCommand("my", "Мои конспекты"),
+            BotCommand("feedback", "Предложения и обратная связь"),
             BotCommand("support", "Поддержать проект"),
         ])
         await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
@@ -554,6 +578,7 @@ def create_application():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("my", my_summaries))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("feedback", feedback_entry))
     app.add_handler(CommandHandler("support", support_project))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(search_suggestion_callback, pattern=r"^sq:"))
