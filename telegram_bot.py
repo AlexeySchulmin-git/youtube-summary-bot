@@ -21,6 +21,7 @@ from services import (
     save_feedback_to_supabase,
 )
 from quality_agent import evaluate_and_evolve
+from analytics import track_user_activity, increment_user_counter, track_event
 
 logger = logging.getLogger(__name__)
 _ACTIVE_USERS: set[int] = set()
@@ -84,6 +85,9 @@ SEARCH_MENU_TEXT = "🔎 Поиск YouTube"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user_activity(update)
+    increment_user_counter(update, "commands_count")
+    track_event(update, "command_used", {"command": "start"})
     return await update.message.reply_text(
         "👋 Привет! Отправь мне ссылку на YouTube видео — я сделаю краткий конспект и выделю важные вещи из видео.",
         reply_markup=MAIN_MENU,
@@ -91,6 +95,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user_activity(update)
+    increment_user_counter(update, "commands_count")
+    track_event(update, "command_used", {"command": "my"})
     if not update.effective_user:
         return await update.message.reply_text("История пока недоступна.")
 
@@ -116,6 +123,9 @@ async def my_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def support_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user_activity(update)
+    increment_user_counter(update, "commands_count")
+    track_event(update, "command_used", {"command": "support"})
     target = update.effective_message
     if not target:
         return
@@ -131,6 +141,9 @@ async def support_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def feedback_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user_activity(update)
+    increment_user_counter(update, "commands_count")
+    track_event(update, "command_used", {"command": "feedback"})
     target = update.effective_message
     if not target:
         return
@@ -151,6 +164,9 @@ async def feedback_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user_activity(update)
+    increment_user_counter(update, "commands_count")
+    track_event(update, "command_used", {"command": "search"})
     if not update.message:
         return
 
@@ -202,6 +218,7 @@ async def search_generate_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     await query.answer("Запускаю конспект...")
+    track_event(update, "button_clicked", {"button": "sg", "video_id": video_id})
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
@@ -214,6 +231,8 @@ async def search_generate_callback(update: Update, context: ContextTypes.DEFAULT
 
 
 async def _process_video_request(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    track_user_activity(update)
+    track_event(update, "summary_started")
     user_id = update.effective_user.id if update.effective_user else None
 
     if user_id is not None:
@@ -255,6 +274,7 @@ async def _process_video_request(update: Update, context: ContextTypes.DEFAULT_T
 
         saved = get_saved_summary_for_user(update, video_id)
         if saved:
+            track_event(update, "summary_cached", {"video_id": video_id})
             try:
                 await progress_msg.delete()
             except Exception:
@@ -280,6 +300,7 @@ async def _process_video_request(update: Update, context: ContextTypes.DEFAULT_T
 
         transcript, source = get_transcript(video_id)
         if not transcript or len(transcript) < 100:
+            track_event(update, "summary_failed", {"reason": "transcript_unavailable", "video_id": video_id})
             try:
                 await progress_msg.delete()
             except Exception:
@@ -313,6 +334,8 @@ async def _process_video_request(update: Update, context: ContextTypes.DEFAULT_T
         ai_title = generate_ai_title(transcript, summary, fallback_title=video_title)
 
         await target.reply_text(summary, parse_mode="Markdown")
+        increment_user_counter(update, "summaries_count")
+        track_event(update, "summary_success", {"video_id": video_id, "chunks": chunk_count})
         try:
             await progress_msg.delete()
         except Exception:
@@ -350,6 +373,7 @@ async def _process_video_request(update: Update, context: ContextTypes.DEFAULT_T
                 return await target.reply_text("Оцени конспект:", reply_markup=keyboard)
     except Exception as exc:
         logger.error(f"Ошибка summarize: {exc}")
+        track_event(update, "summary_failed", {"reason": "exception", "error": str(exc)[:300]})
         target = update.effective_message
         if target:
             return await target.reply_text("Ошибка при анализе. Попробуй ещё раз.")
@@ -382,6 +406,7 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     save_feedback_to_supabase(update, summary_id, rating)
+    track_event(update, "button_clicked", {"button": "fb", "summary_id": summary_id, "rating": rating})
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception as exc:
@@ -391,19 +416,25 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user_activity(update)
     text = update.message.text.strip() if update.message and update.message.text else ""
+    track_event(update, "message_received", {"text_len": len(text)})
 
     if text == "📚 Мои конспекты":
+        track_event(update, "menu_clicked", {"item": "my_summaries"})
         return await my_summaries(update, context)
 
     if text == SEARCH_MENU_TEXT:
+        track_event(update, "menu_clicked", {"item": "search"})
         context.user_data["awaiting_search_query"] = True
         return await update.message.reply_text("Напиши поисковый запрос для YouTube (можно неполный, покажу подсказки).")
 
     if text == "💡 Предложения и обратная связь":
+        track_event(update, "menu_clicked", {"item": "feedback"})
         return await feedback_entry(update, context)
 
     if text == "💙 Поддержать проект":
+        track_event(update, "menu_clicked", {"item": "support"})
         return await support_project(update, context)
 
     if text == "↩ Назад":
@@ -411,6 +442,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Главное меню", reply_markup=MAIN_MENU)
 
     if text == "📖 Справка":
+        track_event(update, "menu_clicked", {"item": "help"})
         context.user_data.pop("awaiting_search_query", None)
         return await update.message.reply_text(
             "Я делаю конспекты YouTube-видео по ссылке.\n"
@@ -419,6 +451,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3) Собираю итоговый конспект\n"
             "4) Сохраняю в твою историю\n"
             "5) Могу найти видео, команда /search или пункт в меню.\n\n"
+            "Мы собираем обезличенные технические данные использования (события, команды, язык интерфейса) только для улучшения сервиса.\n"
             "Нажми «📚 Мои конспекты», чтобы открыть список.",
             reply_markup=MAIN_MENU,
         )
@@ -431,6 +464,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         suggestions = get_youtube_query_suggestions(query, limit=5)
         logger.info(f"Search query received: '{query}', suggestions_count={len(suggestions)}")
         if suggestions:
+            track_event(update, "search_suggestions_shown", {"query": query, "count": len(suggestions)})
             kb_rows = [
                 [InlineKeyboardButton(s[:64], callback_data=f"sq:{idx}")]
                 for idx, s in enumerate(suggestions)
@@ -528,6 +562,7 @@ async def search_suggestion_callback(update: Update, context: ContextTypes.DEFAU
         return
 
     await query.answer(f"Выбрано: {selected}")
+    track_event(update, "button_clicked", {"button": "sq", "selected": selected})
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
